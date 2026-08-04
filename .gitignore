@@ -1,0 +1,32 @@
+# --- Go ---
+bin/
+*.exe
+*.test
+
+# --- 运行时数据 / 敏感配置（不入库）---
+.env
+.env.*
+!.env.example
+data/
+*.log
+*.bak
+registered_accounts.txt
+
+# --- 前端 ---
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+frontend/out/
+
+# --- xray / 下载产物 ---
+bin/xray/
+
+# --- 系统 / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Agent 记忆 / 本地工具 ---
+.codex/
+!AGENTS.md

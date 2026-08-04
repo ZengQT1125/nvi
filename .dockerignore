@@ -1,0 +1,13 @@
+.git
+.github
+data/
+.env
+.env.*
+!.env.example
+frontend/node_modules
+frontend/.next
+bin/xray
+gateway.json
+*.bak
+*.log
+registered_accounts.txt
