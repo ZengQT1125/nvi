@@ -38,10 +38,12 @@ trap 'cleanup 0' INT TERM
 /app/nvidia-api-gateway &
 backend_pid=$!
 
-cd /app/frontend
-npm run start &
+# 前端：Next.js standalone server（自包含运行依赖）
+cd /app/frontend/.next/standalone
+HOSTNAME=0.0.0.0 PORT="$FRONTEND_PORT" node server.js &
 frontend_pid=$!
 
+cd /
 while kill -0 "$backend_pid" 2>/dev/null && kill -0 "$frontend_pid" 2>/dev/null; do
   sleep 1
 done

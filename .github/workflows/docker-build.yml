@@ -14,12 +14,12 @@ env:
   REGISTRY: ghcr.io
   # 注意：GHCR 镜像名必须全小写
   IMAGE_NAME: ghcr.io/zengqt1125/nvi
-  # VPS 目标平台为 arm64，只构建 arm64 镜像，体积更小、构建更快
   PLATFORMS: "linux/arm64"
 
 jobs:
   build-push:
-    runs-on: ubuntu-latest
+    # 原生 arm64 runner，避免 QEMU 模拟导致构建极慢
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -50,3 +50,26 @@ jobs:
             XRAY_VERSION=${{ inputs.xray_version || 'v26.3.27' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 冒烟测试：验证容器能正常启动，后端 /health 与前端页面均可达
+      - name: Smoke test container
+        run: |
+          docker pull ${{ env.IMAGE_NAME }}:latest
+          docker run -d --rm --name nvi-smoke \
+            -e ADMIN_TOKEN=smoke-test-token \
+            -e ENCRYPTION_KEY=12345678901234567890123456789012 \
+            -p 18080:18080 -p 14000:14000 \
+            ${{ env.IMAGE_NAME }}:latest
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:18080/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            docker logs nvi-smoke 2>&1 | tail -50 || true
+            docker rm -f nvi-smoke || true
+            echo "backend /health 未就绪，冒烟测试失败" >&2
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:14000 >/dev/null && echo "frontend OK"
+          docker rm -f nvi-smoke

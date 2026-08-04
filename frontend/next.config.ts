@@ -1,4 +1,4 @@
-﻿import type { NextConfig } from "next";
+import type { NextConfig } from "next";
 import path from "node:path";
 
 const extraAllowedDevOrigins = (process.env.ALLOWED_DEV_ORIGINS || "")
@@ -7,6 +7,7 @@ const extraAllowedDevOrigins = (process.env.ALLOWED_DEV_ORIGINS || "")
   .filter(Boolean);
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   turbopack: {
     root: path.join(__dirname),
   },
