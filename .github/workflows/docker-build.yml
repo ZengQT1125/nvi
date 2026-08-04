@@ -73,3 +73,55 @@ jobs:
           fi
           curl -fsS http://127.0.0.1:14000 >/dev/null && echo "frontend OK"
           docker rm -f nvi-smoke
+
+      # 清理旧版本镜像，只保留最新 3 个（每次构建后自动执行）
+      - name: Cleanup old GHCR images (keep latest 3)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          PKG="nvi"
+          KEEP=3
+
+          # 判断 owner 是 user 还是 org，选择正确的 API 端点
+          API_BASE=""
+          if gh api "/users/$OWNER_LC" >/dev/null 2>&1; then
+            API_BASE="/users/$OWNER_LC"
+          elif gh api "/orgs/$OWNER_LC" >/dev/null 2>&1; then
+            API_BASE="/orgs/$OWNER_LC"
+          else
+            echo "无法确定 $OWNER_LC 的账户类型，跳过清理"
+            exit 0
+          fi
+
+          echo "包: $OWNER_LC/$PKG (端点: $API_BASE)"
+
+          # 获取所有版本 ID（API 按创建时间倒序返回，最新在前）
+          VERSIONS=$(gh api --paginate "$API_BASE/packages/container/$PKG/versions" \
+            --jq '.[].id' 2>/dev/null || true)
+          TOTAL=$(echo "$VERSIONS" | grep -c . || true)
+
+          echo "找到 $TOTAL 个版本，保留最新 $KEEP 个"
+
+          if [ "$TOTAL" -le "$KEEP" ]; then
+            echo "无需清理"
+            exit 0
+          fi
+
+          COUNT=0
+          DELETED=0
+          for VID in $VERSIONS; do
+            COUNT=$((COUNT + 1))
+            if [ "$COUNT" -gt "$KEEP" ]; then
+              echo "删除版本 #$COUNT (ID: $VID)..."
+              if gh api -X DELETE "$API_BASE/packages/container/$PKG/versions/$VID" 2>/dev/null; then
+                echo "  已删除"
+                DELETED=$((DELETED + 1))
+              else
+                echo "  删除失败（可能权限不足，跳过）"
+              fi
+            fi
+          done
+
+          echo "清理完成：删除了 $DELETED 个旧版本"
