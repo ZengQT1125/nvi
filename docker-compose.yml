@@ -1,6 +1,6 @@
 # 生产部署编排：直接拉取 GHCR 镜像，无需本地构建
 # 用法:
-#   1) cp .env.example .env 并填写 ENCRYPTION_KEY / ADMIN_TOKEN
+#   1) cp .env.example .env （建议修改 ENCRYPTION_KEY、ADMIN_TOKEN）
 #   2) docker compose pull && docker compose up -d
 services:
   gateway:
@@ -11,8 +11,9 @@ services:
     env_file:
       - .env
     environment:
-      # 以下两个为敏感配置，必须通过 .env 提供，缺失会直接报错（不留默认值）
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?请先在 .env 中设置 ENCRYPTION_KEY}
+      # ENCRYPTION_KEY 有默认值，部署时可自行修改
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-12345678901234567890123456789012}
+      # ADMIN_TOKEN 无默认值，必须通过 .env 提供（历史默认值已移除），缺失会直接报错
       ADMIN_TOKEN: ${ADMIN_TOKEN:?请先在 .env 中设置 ADMIN_TOKEN}
       PORT: 18080
       BACKEND_PORT: 18080
