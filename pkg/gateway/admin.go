@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -266,16 +265,8 @@ func ExportAPIKeys(c *fiber.Ctx) error {
 		if decryptErr != nil {
 			continue
 		}
-		name := strings.TrimSpace(key.Name)
-		if name == "" {
-			name = fmt.Sprintf("NVIDIA-%04d", key.ID)
-		}
-		// 名称、Key、权重逐行一个，与批量导入解析（逗号分隔）兼容。
-		builder.WriteString(name)
-		builder.WriteString(",")
+		// 每行仅输出 Key 明文，方便直接粘贴使用或再次导入。
 		builder.WriteString(plaintext)
-		builder.WriteString(",")
-		builder.WriteString(strconv.FormatFloat(key.Weight, 'f', -1, 64))
 		builder.WriteString("\n")
 	}
 

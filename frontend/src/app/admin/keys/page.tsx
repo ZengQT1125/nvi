@@ -299,6 +299,35 @@ export default function APIKeysPage() {
     }
   };
 
+  // copyTextToClipboard 优先使用异步 Clipboard API；在非 HTTPS / 非 localhost
+  // 环境（例如直接通过 IP 访问管理后台）Clipboard API 不可用，降级为
+  // textarea + execCommand 的方式，保证各种部署方式下都能复制成功。
+  const copyTextToClipboard = async (text: string): Promise<boolean> => {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // 继续走降级方案
+      }
+    }
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.top = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+
   const copyKey = async (id: number) => {
     resetMessages();
     setBusyKeyId(id);
@@ -314,7 +343,11 @@ export default function APIKeysPage() {
         setErrorMessage("未获取到 Key 明文。")
         return;
       }
-      await navigator.clipboard.writeText(plain);
+      const ok = await copyTextToClipboard(plain);
+      if (!ok) {
+        setErrorMessage("复制失败，请手动复制。")
+        return;
+      }
       setMessage(`已复制 ${payload?.name || ""} 的 Key 到剪贴板。`)
     } catch {
       setErrorMessage("复制失败，请重试。")
@@ -342,7 +375,7 @@ export default function APIKeysPage() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setMessage("已导出全部上游 Key（格式与批量导入兼容）。")
+      setMessage("已导出全部上游 Key（每行一个，可直接使用或再导入）。")
     } catch {
       setErrorMessage("导出失败，请重试。")
     }
