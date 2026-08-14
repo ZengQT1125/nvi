@@ -299,6 +299,55 @@ export default function APIKeysPage() {
     }
   };
 
+  const copyKey = async (id: number) => {
+    resetMessages();
+    setBusyKeyId(id);
+    try {
+      const res = await fetch(`/api/keys/${id}/plaintext`, { cache: "no-store" });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        setErrorMessage(payload?.error || "读取 Key 明文失败。")
+        return;
+      }
+      const plain = payload?.plainKey || payload?.plaintext || "";
+      if (!plain) {
+        setErrorMessage("未获取到 Key 明文。")
+        return;
+      }
+      await navigator.clipboard.writeText(plain);
+      setMessage(`已复制 ${payload?.name || ""} 的 Key 到剪贴板。`)
+    } catch {
+      setErrorMessage("复制失败，请重试。")
+    } finally {
+      setBusyKeyId(null);
+    }
+  };
+
+  const exportKeys = async () => {
+    resetMessages();
+    try {
+      const res = await fetch("/api/keys/export", { cache: "no-store" });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        setErrorMessage(payload?.error || "导出失败。")
+        return;
+      }
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "api_keys_export.txt";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setMessage("已导出全部上游 Key（格式与批量导入兼容）。")
+    } catch {
+      setErrorMessage("导出失败，请重试。")
+    }
+  };
+
   const probeKey = async (id: number) => {
     resetMessages();
     setBusyKeyId(id);
@@ -402,8 +451,8 @@ export default function APIKeysPage() {
 
         <Card className="border border-slate-200/70 bg-white/90 shadow-sm">
           <CardHeader>
-            <CardTitle>批量导入</CardTitle>
-            <CardDescription>支持一行一个 key，也支持 `name,key,weight`、`name|key|weight` 这样的格式。</CardDescription>
+            <CardTitle>批量导入 / 导出</CardTitle>
+            <CardDescription>支持一行一个 key，也支持 `name,key,weight`、`name|key|weight` 这样的格式。导出时按 `name,key,weight` 每行一个，可直接再导入。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Textarea
@@ -414,6 +463,7 @@ export default function APIKeysPage() {
             />
             <div className="flex gap-3">
               <Button onClick={handleBulkImport} disabled={isSubmitting}>{isSubmitting ? "导入中..." : "开始导入"}</Button>
+              <Button variant="outline" onClick={exportKeys} disabled={isSubmitting}>导出全部</Button>
               <Button variant="outline" onClick={() => setBulkPayload("")}>清空</Button>
             </div>
             {importSummary.length > 0 ? (
@@ -467,6 +517,7 @@ export default function APIKeysPage() {
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-2 xl:max-w-sm xl:justify-end">
+                      <Button variant="outline" size="sm" onClick={() => copyKey(key.id)} disabled={isBusy}>复制</Button>
                       <Button variant="outline" size="sm" onClick={() => (isEditing ? cancelEdit() : startEdit(key))} disabled={isBusy}>{isEditing ? "收起编辑" : "编辑"}</Button>
                       <Button variant="outline" size="sm" onClick={() => updateStatus(key.id, key.status === "Disabled" ? "Active" : "Disabled")} disabled={isBusy}>{key.status === "Disabled" ? "启用" : "禁用"}</Button>
                       <Button variant="outline" size="sm" onClick={() => toggleProbeOnly(key)} disabled={isBusy}>{key.probeOnly ? "取消健康专用" : "设为健康专用"}</Button>

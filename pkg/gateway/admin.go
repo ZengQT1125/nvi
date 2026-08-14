@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -208,6 +209,79 @@ func UpdateAPIKey(sched *scheduler.Scheduler) fiber.Handler {
 			"key":     newAPIKeyResponse(updatedKey),
 		})
 	}
+}
+
+// RevealAPIKeyPlaintext 返回单个上游 Key 的明文（解密存储值）。
+// 供管理后台“复制”按钮使用；仅管理端可访问。
+func RevealAPIKeyPlaintext(c *fiber.Ctx) error {
+	id, err := parseAPIKeyID(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	rootKey := utils.GetEncryptionKey()
+	if rootKey == "" || len(rootKey) != 32 {
+		return c.Status(500).JSON(fiber.Map{"error": "\u670d\u52a1\u7aef\u7f3a\u5c11\u5408\u6cd5\u7684 32 \u4f4d ENCRYPTION_KEY"})
+	}
+
+	store, err := db.ReadStore()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "\u8bfb\u53d6\u4e0a\u6e38 Key \u5931\u8d25"})
+	}
+	for _, key := range store.APIKeys {
+		if key.ID != id {
+			continue
+		}
+		plaintext, decryptErr := utils.Decrypt(key.Key, rootKey)
+		if decryptErr != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "\u8be5 Key \u65e0\u6cd5\u89e3\u5bc6"})
+		}
+		return c.JSON(fiber.Map{
+			"id":        key.ID,
+			"name":      key.Name,
+			"plainKey":  plaintext,
+			"plaintext": plaintext,
+		})
+	}
+	return c.Status(404).JSON(fiber.Map{"error": errAPIKeyNotFound.Error()})
+}
+
+// ExportAPIKeys 批量导出上游 Key，格式与批量导入兼容：
+// 每行 `name,key,weight`（或仅 `key`），分隔符统一用逗号，逐行一个 Key。
+// 返回纯文本，可直接复制回“批量导入”粘贴框，或另存为 txt 文件。
+func ExportAPIKeys(c *fiber.Ctx) error {
+	rootKey := utils.GetEncryptionKey()
+	if rootKey == "" || len(rootKey) != 32 {
+		return c.Status(500).JSON(fiber.Map{"error": "\u670d\u52a1\u7aef\u7f3a\u5c11\u5408\u6cd5\u7684 32 \u4f4d ENCRYPTION_KEY"})
+	}
+
+	store, err := db.ReadStore()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "\u8bfb\u53d6\u4e0a\u6e38 Key \u5931\u8d25"})
+	}
+
+	var builder strings.Builder
+	for _, key := range store.APIKeys {
+		plaintext, decryptErr := utils.Decrypt(key.Key, rootKey)
+		if decryptErr != nil {
+			continue
+		}
+		name := strings.TrimSpace(key.Name)
+		if name == "" {
+			name = fmt.Sprintf("NVIDIA-%04d", key.ID)
+		}
+		// 名称、Key、权重逐行一个，与批量导入解析（逗号分隔）兼容。
+		builder.WriteString(name)
+		builder.WriteString(",")
+		builder.WriteString(plaintext)
+		builder.WriteString(",")
+		builder.WriteString(strconv.FormatFloat(key.Weight, 'f', -1, 64))
+		builder.WriteString("\n")
+	}
+
+	c.Set("Content-Type", "text/plain; charset=utf-8")
+	c.Set("Content-Disposition", "attachment; filename=api_keys_export.txt")
+	return c.SendString(builder.String())
 }
 
 func DeleteAPIKey(sched *scheduler.Scheduler) fiber.Handler {

@@ -126,6 +126,8 @@ func serveBackend() {
 	admin.Post("/keys", gateway.AddAPIKey(sched))
 	admin.Post("/keys/import", gateway.ImportAPIKeys(sched))
 	admin.Get("/keys", gateway.GetAPIKeys)
+	admin.Get("/keys/export", gateway.ExportAPIKeys)
+	admin.Get("/keys/:id/plaintext", gateway.RevealAPIKeyPlaintext)
 	admin.Put("/keys/:id", gateway.UpdateAPIKey(sched))
 	admin.Delete("/keys/:id", gateway.DeleteAPIKey(sched))
 	admin.Patch("/keys/:id/status", gateway.UpdateAPIKeyStatus(sched))
