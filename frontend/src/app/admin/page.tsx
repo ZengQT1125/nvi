@@ -75,11 +75,6 @@ const quickLinks = [
     description: "获取全部模型，逐模型测试 OpenAI / Claude / Gemini。",
     href: "/admin/debug",
   },
-  {
-    title: "Xray 核心",
-    description: "管理 vless / vmess / shadowsocks / trojan / socks / http 节点。",
-    href: "/admin/core",
-  },
 ];
 
 export default function AdminOverview() {

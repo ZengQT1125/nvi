@@ -69,14 +69,3 @@ func ResolveBackendLogPath() string {
 func ResolveFrontendLogPath() string {
 	return filepath.Join(ResolveGatewayLogsDir(), "frontend", "frontend.log")
 }
-
-func ResolveXrayCoreDir() string {
-	if custom := strings.TrimSpace(os.Getenv("XRAY_CORE_DIR")); custom != "" {
-		return ResolveAbsolutePath(custom)
-	}
-	return filepath.Join(ResolveProjectRoot(), "bin", "xray")
-}
-
-func ResolveXrayLogPath() string {
-	return filepath.Join(ResolveGatewayLogsDir(), "xray", "xray.log")
-}

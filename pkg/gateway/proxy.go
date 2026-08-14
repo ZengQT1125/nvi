@@ -27,17 +27,11 @@ var bufferPool = sync.Pool{
 	},
 }
 
-type XrayRuntimeRepairer interface {
-	Ensure(ctx context.Context) error
-	Reload(ctx context.Context) error
-}
-
 type Gateway struct {
 	scheduler    *scheduler.Scheduler
 	cache        *cache.SemanticCache
 	usageTracker *middleware.UsageTracker
 	client       *http.Client
-	xrayRepairer XrayRuntimeRepairer
 }
 
 type proxyResult struct {
@@ -47,17 +41,12 @@ type proxyResult struct {
 	Headers     map[string]string
 }
 
-func NewGateway(sched *scheduler.Scheduler, semanticCache *cache.SemanticCache, usageTracker *middleware.UsageTracker, repairers ...XrayRuntimeRepairer) *Gateway {
-	var repairer XrayRuntimeRepairer
-	if len(repairers) > 0 {
-		repairer = repairers[0]
-	}
+func NewGateway(sched *scheduler.Scheduler, semanticCache *cache.SemanticCache, usageTracker *middleware.UsageTracker) *Gateway {
 	return &Gateway{
 		scheduler:    sched,
 		cache:        semanticCache,
 		usageTracker: usageTracker,
 		client:       &http.Client{Timeout: 10 * time.Minute},
-		xrayRepairer: repairer,
 	}
 }
 
@@ -96,36 +85,6 @@ func (g *Gateway) refreshConversationKeyBinding(affinityID, key string, force bo
 
 func (g *Gateway) clearConversationKeyBinding(affinityID, key string) {
 	globalConversationAffinityStore.clear(strings.TrimSpace(affinityID), strings.TrimSpace(key))
-}
-
-func (g *Gateway) recoverNetworkPathForKey(ctx context.Context, cfg models.SystemConfig, key string, err error) {
-	proxyInfo, ok := effectiveProxyRuntimeInfoForAPIKey(cfg, key)
-	if ok {
-		invalidateTransportCache(proxyInfo.URL)
-	} else {
-		invalidateTransportCache(effectiveProxyURLForAPIKey(cfg, key))
-	}
-	if ok && strings.TrimSpace(proxyInfo.ManagedBy) == models.CoreManagedByXray && err != nil && classifyUpstreamTransportError(err) == upstreamFailurePolicyNetworkTransient {
-		if altURL, switched := selectAlternateManagedProxyURLForAPIKey(cfg, key, proxyInfo.URL); switched {
-			invalidateTransportCache(altURL)
-		}
-		if replacement, switched := promoteAlternativeManagedProxy(proxyInfo); switched {
-			invalidateTransportCache(replacement.URL)
-		}
-	}
-	if err == nil || g == nil || g.xrayRepairer == nil {
-		return
-	}
-	if !ok || strings.TrimSpace(proxyInfo.ManagedBy) != models.CoreManagedByXray {
-		return
-	}
-	if !isLikelyLocalLoopbackProxyError(err) {
-		return
-	}
-	// 只清除失败节点的 transport 缓存，不重启 xray
-	// 重启 xray 会杀掉所有正在工作的节点连接，造成雪崩
-	// xray 的 30 秒健康检查会自动处理节点恢复
-	invalidateTransportCache(proxyInfo.URL)
 }
 
 func (g *Gateway) acquireKeyWithQueue(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, maxConcurrency int, allowEarlyHeaders bool, operation string) (string, error) {
@@ -465,7 +424,6 @@ func (g *Gateway) executeOpenAINonStream(ctx context.Context, translatedBody []b
 				recordUpstreamRuntimeEvent("chat.nonstream", "upstream_error", key, false, result.StatusCode, "upstream returned empty response; retrying with next available key")
 				// 清除 affinity 绑定，避免下次循环继续选同一个返回空回复的 key
 				g.clearConversationKeyBinding(affinityID, key)
-				g.recoverNetworkPathForKey(ctx, cfg, key, errUpstreamEmptyResponse)
 				continue
 			}
 			g.refreshConversationKeyBinding(affinityID, key, !reusedPreferredKey)
@@ -647,7 +605,6 @@ func (g *Gateway) executeOpenAIStream(ctx context.Context, w http.ResponseWriter
 		case drainIdleTimeout:
 			streamInterrupted = true
 			recordUpstreamRuntimeEvent("chat.stream", "chunk_read_timeout", key, false, 0, "上游流式传输中途静默超时，已主动终止")
-			g.recoverNetworkPathForKey(ctx, cfg, key, errors.New("stream chunk read timeout"))
 			if !openAIStreamBytesContainDone(responseBuffer.Bytes()) {
 				_, _ = w.Write([]byte("\n\ndata: {\"id\":\"chatcmpl-interrupted\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
 			}
@@ -657,7 +614,6 @@ func (g *Gateway) executeOpenAIStream(ctx context.Context, w http.ResponseWriter
 		case drainUpstreamErr:
 			streamInterrupted = true
 			recordUpstreamRuntimeEvent("chat.stream", "upstream_error", key, false, 0, "上游流式传输中途出错")
-			g.recoverNetworkPathForKey(ctx, cfg, key, errors.New("stream upstream error"))
 			if !openAIStreamBytesContainDone(responseBuffer.Bytes()) {
 				_, _ = w.Write([]byte("\n\ndata: {\"id\":\"chatcmpl-interrupted\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
 			}
@@ -784,7 +740,6 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 				}
 				recordUpstreamRuntimeEvent(operation, stage, key, false, 0, message)
 				if attempt+1 < attemptBudget {
-					g.recoverNetworkPathForKey(ctx, cfg, key, err)
 					if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 						break
 					}
@@ -809,7 +764,6 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 			lastNetworkErr = errUpstreamEmptyResponse.Error()
 			recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, "upstream returned empty response; retrying", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody))
 			if attempt+1 < attemptBudget {
-				g.recoverNetworkPathForKey(ctx, cfg, key, errUpstreamEmptyResponse)
 				if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 					break
 				}
@@ -837,7 +791,6 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 			lastNetworkErr = parsedErr
 			recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody))
 			if attempt+1 < attemptBudget {
-				g.recoverNetworkPathForKey(ctx, cfg, key, nil)
 				if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 					break
 				}

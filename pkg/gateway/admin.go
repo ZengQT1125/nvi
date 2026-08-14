@@ -16,16 +16,13 @@ import (
 )
 
 type apiKeyResponse struct {
-	ID         uint      `json:"id"`
-	Name       string    `json:"name"`
-	Weight     float64   `json:"weight"`
-	Status     string    `json:"status"`
-	ProbeOnly  bool      `json:"probeOnly"`
-	ProxyID    uint      `json:"proxyId,omitempty"`
-	ProxyName  string    `json:"proxyName,omitempty"`
-	ProxyGroup string    `json:"proxyGroup,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	ID        uint      `json:"id"`
+	Name      string    `json:"name"`
+	Weight    float64   `json:"weight"`
+	Status    string    `json:"status"`
+	ProbeOnly bool      `json:"probeOnly"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type apiKeysResponse struct {
@@ -37,7 +34,6 @@ type createAPIKeyRequest struct {
 	Name      string  `json:"name"`
 	Weight    float64 `json:"weight"`
 	ProbeOnly bool    `json:"probeOnly"`
-	ProxyID   *uint   `json:"proxyId,omitempty"`
 }
 
 type updateAPIKeyRequest struct {
@@ -45,7 +41,6 @@ type updateAPIKeyRequest struct {
 	Name      *string  `json:"name"`
 	Weight    *float64 `json:"weight"`
 	ProbeOnly *bool    `json:"probeOnly"`
-	ProxyID   *uint    `json:"proxyId,omitempty"`
 }
 
 type updateAPIKeyStatusRequest struct {
@@ -58,8 +53,6 @@ type systemConfigResponse struct {
 	MaxRetries              int    `json:"maxRetries"`
 	MaxConcurrency          int    `json:"maxConcurrency"`
 	RequestTimeoutSecond    int    `json:"requestTimeoutSecond"`
-	UpstreamProxyURL        string `json:"upstreamProxyURL"`
-	UpstreamProxyID         uint   `json:"upstreamProxyId,omitempty"`
 	GatewayBaseURL          string `json:"gatewayBaseURL"`
 	FirstByteTimeoutMs      int    `json:"firstByteTimeoutMs"`
 	HealthProbeTimeoutSec   int    `json:"healthProbeTimeoutSecond"`
@@ -79,8 +72,6 @@ type updateSystemConfigRequest struct {
 	MaxRetries              *int    `json:"maxRetries"`
 	MaxConcurrency          *int    `json:"maxConcurrency"`
 	RequestTimeoutSecond    *int    `json:"requestTimeoutSecond"`
-	UpstreamProxyURL        *string `json:"upstreamProxyURL"`
-	UpstreamProxyID         *uint   `json:"upstreamProxyId,omitempty"`
 	FirstByteTimeoutMs      *int    `json:"firstByteTimeoutMs"`
 	HealthProbeTimeoutSec   *int    `json:"healthProbeTimeoutSecond"`
 	StreamIdleTimeoutSec    *int    `json:"streamIdleTimeoutSecond"`
@@ -127,22 +118,12 @@ func AddAPIKey(sched *scheduler.Scheduler) fiber.Handler {
 		}
 
 		if err := db.UpdateStore(func(store *db.Store) error {
-			if req.ProxyID != nil {
-				if err := validateAPIKeyProxyReference(store, *req.ProxyID); err != nil {
-					return err
-				}
-				apiKey.ProxyID = *req.ProxyID
-			}
 			apiKey.ID = store.NextAPIID
 			store.NextAPIID++
 			store.APIKeys = append(store.APIKeys, apiKey)
 			return nil
 		}); err != nil {
-			status := 500
-			if err.Error() == "所选代理不存在" {
-				status = 400
-			}
-			return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		}
 
 		if err := LoadActiveKeys(context.Background(), sched); err != nil {
@@ -161,7 +142,7 @@ func GetAPIKeys(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "\u8bfb\u53d6\u4e0a\u6e38 Key \u5931\u8d25"})
 	}
-	return c.JSON(apiKeysResponse{Keys: buildAPIKeyResponsesWithProxies(store.APIKeys, store.Proxies)})
+	return c.JSON(apiKeysResponse{Keys: buildAPIKeyResponses(store.APIKeys)})
 }
 
 func UpdateAPIKey(sched *scheduler.Scheduler) fiber.Handler {
@@ -205,12 +186,6 @@ func UpdateAPIKey(sched *scheduler.Scheduler) fiber.Handler {
 			if req.ProbeOnly != nil {
 				key.ProbeOnly = *req.ProbeOnly
 			}
-			if req.ProxyID != nil {
-				if err := validateAPIKeyProxyReference(store, *req.ProxyID); err != nil {
-					return err
-				}
-				key.ProxyID = *req.ProxyID
-			}
 			key.UpdatedAt = time.Now()
 			return nil
 		})
@@ -218,7 +193,7 @@ func UpdateAPIKey(sched *scheduler.Scheduler) fiber.Handler {
 			status := 500
 			if errors.Is(err, errAPIKeyNotFound) {
 				status = 404
-			} else if err.Error() == "\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a" || err.Error() == "\u6743\u91cd\u5fc5\u987b\u5927\u4e8e 0" || err.Error() == "所选代理不存在" {
+			} else if err.Error() == "\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a" || err.Error() == "\u6743\u91cd\u5fc5\u987b\u5927\u4e8e 0" {
 				status = 400
 			}
 			return c.Status(status).JSON(fiber.Map{"error": err.Error()})
@@ -426,27 +401,9 @@ func UpdateSystemConfig(sched *scheduler.Scheduler) fiber.Handler {
 			return c.Status(400).JSON(fiber.Map{"error": "invalid request body"})
 		}
 
-		var normalizedProxyURL *string
-		if req.UpstreamProxyURL != nil {
-			trimmed := strings.TrimSpace(*req.UpstreamProxyURL)
-			if err := validateUpstreamProxySetting(trimmed); err != nil {
-				return c.Status(400).JSON(fiber.Map{"error": "invalid upstream proxy setting: " + err.Error()})
-			}
-			normalizedProxyURL = &trimmed
-		}
-
 		var updatedConfig models.SystemConfig
 		err := db.UpdateStore(func(store *db.Store) error {
 			cfg := store.SystemConfig
-			if req.UpstreamProxyID != nil {
-				if err := validateAPIKeyProxyReference(store, *req.UpstreamProxyID); err != nil {
-					return err
-				}
-				cfg.UpstreamProxyID = *req.UpstreamProxyID
-				if *req.UpstreamProxyID > 0 {
-					cfg.UpstreamProxyURL = ""
-				}
-			}
 			if req.UpstreamBaseURL != nil {
 				cfg.UpstreamBaseURL = strings.TrimSpace(*req.UpstreamBaseURL)
 			}
@@ -461,12 +418,6 @@ func UpdateSystemConfig(sched *scheduler.Scheduler) fiber.Handler {
 			}
 			if req.RequestTimeoutSecond != nil {
 				cfg.RequestTimeoutSecond = *req.RequestTimeoutSecond
-			}
-			if normalizedProxyURL != nil {
-				if req.UpstreamProxyID == nil || *req.UpstreamProxyID == 0 {
-					cfg.UpstreamProxyURL = *normalizedProxyURL
-					cfg.UpstreamProxyID = 0
-				}
 			}
 			if req.FirstByteTimeoutMs != nil {
 				cfg.FirstByteTimeoutMs = *req.FirstByteTimeoutMs
@@ -530,8 +481,6 @@ func newSystemConfigResponse(cfg models.SystemConfig) systemConfigResponse {
 		MaxRetries:              cfg.MaxRetries,
 		MaxConcurrency:          cfg.MaxConcurrency,
 		RequestTimeoutSecond:    cfg.RequestTimeoutSecond,
-		UpstreamProxyURL:        cfg.UpstreamProxyURL,
-		UpstreamProxyID:         cfg.UpstreamProxyID,
 		GatewayBaseURL:          gatewayBaseURL(),
 		FirstByteTimeoutMs:      cfg.FirstByteTimeoutMs,
 		HealthProbeTimeoutSec:   cfg.HealthProbeTimeoutSec,
@@ -619,40 +568,39 @@ func deleteAPIKey(id uint) error {
 }
 
 func buildAPIKeyResponses(keys []models.APIKey) []apiKeyResponse {
-	return buildAPIKeyResponsesWithProxies(keys, nil)
-}
-
-func buildAPIKeyResponsesWithProxies(keys []models.APIKey, proxies []models.UpstreamProxy) []apiKeyResponse {
-	proxyIndex := buildProxyReferenceIndex(proxies)
 	items := make([]apiKeyResponse, 0, len(keys))
 	for _, key := range keys {
-		items = append(items, newAPIKeyResponseWithProxies(key, proxyIndex))
+		items = append(items, newAPIKeyResponse(key))
 	}
 	return items
 }
 
 func newAPIKeyResponse(key models.APIKey) apiKeyResponse {
-	return newAPIKeyResponseWithProxies(key, nil)
-}
-
-func newAPIKeyResponseWithProxies(key models.APIKey, proxyIndex map[uint]models.UpstreamProxy) apiKeyResponse {
-	resp := apiKeyResponse{
+	return apiKeyResponse{
 		ID:        key.ID,
 		Name:      key.Name,
 		Weight:    key.Weight,
 		Status:    key.Status,
 		ProbeOnly: key.ProbeOnly,
-		ProxyID:   key.ProxyID,
 		CreatedAt: key.CreatedAt,
 		UpdatedAt: key.UpdatedAt,
 	}
-	if proxyIndex != nil {
-		if proxy, ok := proxyIndex[key.ProxyID]; ok {
-			resp.ProxyName = proxy.Name
-			resp.ProxyGroup = proxy.Group
-		}
+}
+
+// GatewayVersion 由构建流程注入，可在编译时通过 -ldflags 覆盖：
+//   go build -ldflags "-X nvidia-api-gateway/pkg/gateway.GatewayVersion=v1.2.3" ./main.go
+var GatewayVersion = "v3.1.0-no-xray"
+
+// AdminVersion 供管理后台显示后端版本号。
+// 该路由挂在 /admin 组内，已由 AdminAuthMiddleware 校验 X-Admin-Token。
+func AdminVersion() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"version":   GatewayVersion,
+			"service":   "nvidia-api-gateway",
+			"proxyMode": "system-default",
+		})
 	}
-	return resp
 }
 
 // AdminAuthCheck 供前端登录页验证管理后台密码是否正确。

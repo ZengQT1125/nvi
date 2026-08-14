@@ -113,26 +113,3 @@ func sleepWithContext(ctx context.Context, duration time.Duration) bool {
 		return true
 	}
 }
-
-func isLikelyLocalLoopbackProxyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	// 必须包含本地回环地址才认为是 xray 本地代理问题
-	isLoopback := strings.Contains(message, "127.0.0.1:") ||
-		strings.Contains(message, "localhost:") ||
-		strings.Contains(message, "[::1]:")
-	if !isLoopback {
-		return false
-	}
-	return strings.Contains(message, "connectex") ||
-		strings.Contains(message, "actively refused") ||
-		strings.Contains(message, "forcibly closed") ||
-		strings.Contains(message, "connection reset") ||
-		strings.Contains(message, "wsarecv") ||
-		strings.Contains(message, "connection refused") ||
-		strings.Contains(message, "eof") ||
-		strings.Contains(message, "broken pipe") ||
-		strings.Contains(message, "i/o timeout")
-}

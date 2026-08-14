@@ -16,19 +16,12 @@ import (
 )
 
 type Store struct {
-	APIKeys              []models.APIKey                  `json:"api_keys"`
-	Proxies              []models.UpstreamProxy           `json:"proxies,omitempty"`
-	MasterKeys           []models.MasterKey               `json:"master_keys"`
-	CoreProfiles         []models.CoreProfile             `json:"core_profiles,omitempty"`
-	SystemConfig         models.SystemConfig              `json:"system_config"`
-	ExternalProxySources models.ExternalProxySources      `json:"external_proxy_sources,omitempty"`
-	ProxyImportSchedule  models.ProxyImportSchedule       `json:"proxy_import_schedule,omitempty"`
-	ProxyImportLogs      []models.ProxyImportExecutionLog `json:"proxy_import_logs,omitempty"`
-	HealthState          json.RawMessage                  `json:"health_state,omitempty"`
-	NextAPIID            uint                             `json:"next_api_id"`
-	NextProxyID          uint                             `json:"next_proxy_id,omitempty"`
-	NextMKID             uint                             `json:"next_master_key_id"`
-	NextCoreProfileID    uint                             `json:"next_core_profile_id,omitempty"`
+	APIKeys     []models.APIKey     `json:"api_keys"`
+	MasterKeys  []models.MasterKey   `json:"master_keys"`
+	SystemConfig models.SystemConfig `json:"system_config"`
+	HealthState json.RawMessage      `json:"health_state,omitempty"`
+	NextAPIID   uint                 `json:"next_api_id"`
+	NextMKID    uint                 `json:"next_master_key_id"`
 }
 
 type jsonListFile[T any] struct {
@@ -37,16 +30,11 @@ type jsonListFile[T any] struct {
 }
 
 const (
-	apiKeysFilePath             = "keys/api_keys.json"
-	masterKeysFilePath          = "keys/master_keys.json"
-	proxiesFilePath             = "config/proxies.json"
-	coreProfilesFilePath        = "config/core_profiles.json"
-	systemConfigFilePath        = "config/system_config.json"
-	externalProxySourcesPath    = "config/external_proxy_sources.json"
-	proxyImportScheduleFilePath = "config/proxy_import_schedule.json"
-	proxyImportLogsFilePath     = "state/proxy_import_logs.json"
-	healthStateFilePath         = "state/health_state.json"
-	modelCatalogFilePath        = "cache/model_catalog.json"
+	apiKeysFilePath      = "keys/api_keys.json"
+	masterKeysFilePath   = "keys/master_keys.json"
+	systemConfigFilePath = "config/system_config.json"
+	healthStateFilePath  = "state/health_state.json"
+	modelCatalogFilePath = "cache/model_catalog.json"
 )
 
 var (
@@ -208,25 +196,14 @@ func migrateLegacyDataFiles() error {
 	legacyPaths := map[string]string{
 		"api_keys.json":                  apiKeysFilePath,
 		"master_keys.json":               masterKeysFilePath,
-		"proxies.json":                   proxiesFilePath,
-		"core_profiles.json":             coreProfilesFilePath,
 		"system_config.json":             systemConfigFilePath,
-		"external_proxy_sources.json":    externalProxySourcesPath,
-		"proxy_import_schedule.json":     proxyImportScheduleFilePath,
-		"proxy_import_logs.json":         proxyImportLogsFilePath,
 		"health_state.json":              healthStateFilePath,
 		"model_catalog.json":             modelCatalogFilePath,
 		apiKeysFilePath:                  apiKeysFilePath,
 		masterKeysFilePath:               masterKeysFilePath,
-		proxiesFilePath:                  proxiesFilePath,
-		coreProfilesFilePath:             coreProfilesFilePath,
 		systemConfigFilePath:             systemConfigFilePath,
-		externalProxySourcesPath:         externalProxySourcesPath,
-		proxyImportScheduleFilePath:      proxyImportScheduleFilePath,
-		"runtime/proxy_import_logs.json": proxyImportLogsFilePath,
 		"runtime/health_state.json":      healthStateFilePath,
 		"runtime/model_catalog.json":     modelCatalogFilePath,
-		proxyImportLogsFilePath:          proxyImportLogsFilePath,
 		healthStateFilePath:              healthStateFilePath,
 		modelCatalogFilePath:             modelCatalogFilePath,
 	}
@@ -345,25 +322,10 @@ func ensureDefaultFiles() error {
 	if err := ensureJSONFile(filepath.Join(storeDir, apiKeysFilePath), jsonListFile[models.APIKey]{NextID: defaults.NextAPIID, Items: defaults.APIKeys}); err != nil {
 		return err
 	}
-	if err := ensureJSONFile(filepath.Join(storeDir, proxiesFilePath), jsonListFile[models.UpstreamProxy]{NextID: defaults.NextProxyID, Items: defaults.Proxies}); err != nil {
-		return err
-	}
 	if err := ensureJSONFile(filepath.Join(storeDir, masterKeysFilePath), jsonListFile[models.MasterKey]{NextID: defaults.NextMKID, Items: defaults.MasterKeys}); err != nil {
 		return err
 	}
-	if err := ensureJSONFile(filepath.Join(storeDir, coreProfilesFilePath), jsonListFile[models.CoreProfile]{NextID: defaults.NextCoreProfileID, Items: defaults.CoreProfiles}); err != nil {
-		return err
-	}
 	if err := ensureJSONFile(filepath.Join(storeDir, systemConfigFilePath), defaults.SystemConfig); err != nil {
-		return err
-	}
-	if err := ensureJSONFile(filepath.Join(storeDir, externalProxySourcesPath), defaults.ExternalProxySources); err != nil {
-		return err
-	}
-	if err := ensureJSONFile(filepath.Join(storeDir, proxyImportScheduleFilePath), defaults.ProxyImportSchedule); err != nil {
-		return err
-	}
-	if err := ensureJSONFile(filepath.Join(storeDir, proxyImportLogsFilePath), defaults.ProxyImportLogs); err != nil {
 		return err
 	}
 	if err := ensureJSONFile(filepath.Join(storeDir, healthStateFilePath), map[string]any{}); err != nil {
@@ -459,13 +421,6 @@ func readStoreUnlocked() (*Store, error) {
 	store.APIKeys = apiKeysFile.Items
 	store.NextAPIID = apiKeysFile.NextID
 
-	proxiesFile := jsonListFile[models.UpstreamProxy]{NextID: store.NextProxyID, Items: store.Proxies}
-	if err := readJSONFile(filepath.Join(storeDir, proxiesFilePath), &proxiesFile); err != nil {
-		return nil, err
-	}
-	store.Proxies = proxiesFile.Items
-	store.NextProxyID = proxiesFile.NextID
-
 	masterKeysFile := jsonListFile[models.MasterKey]{NextID: store.NextMKID, Items: store.MasterKeys}
 	if err := readJSONFile(filepath.Join(storeDir, masterKeysFilePath), &masterKeysFile); err != nil {
 		return nil, err
@@ -473,23 +428,7 @@ func readStoreUnlocked() (*Store, error) {
 	store.MasterKeys = masterKeysFile.Items
 	store.NextMKID = masterKeysFile.NextID
 
-	coreProfilesFile := jsonListFile[models.CoreProfile]{NextID: store.NextCoreProfileID, Items: store.CoreProfiles}
-	if err := readJSONFile(filepath.Join(storeDir, coreProfilesFilePath), &coreProfilesFile); err != nil {
-		return nil, err
-	}
-	store.CoreProfiles = coreProfilesFile.Items
-	store.NextCoreProfileID = coreProfilesFile.NextID
-
 	if err := readJSONFile(filepath.Join(storeDir, systemConfigFilePath), &store.SystemConfig); err != nil {
-		return nil, err
-	}
-	if err := readJSONFile(filepath.Join(storeDir, externalProxySourcesPath), &store.ExternalProxySources); err != nil {
-		return nil, err
-	}
-	if err := readJSONFile(filepath.Join(storeDir, proxyImportScheduleFilePath), &store.ProxyImportSchedule); err != nil {
-		return nil, err
-	}
-	if err := readJSONFile(filepath.Join(storeDir, proxyImportLogsFilePath), &store.ProxyImportLogs); err != nil {
 		return nil, err
 	}
 
@@ -524,25 +463,10 @@ func writeStoreUnlocked(store *Store) error {
 	if err := writeJSONFile(filepath.Join(storeDir, apiKeysFilePath), jsonListFile[models.APIKey]{NextID: store.NextAPIID, Items: store.APIKeys}); err != nil {
 		return err
 	}
-	if err := writeJSONFile(filepath.Join(storeDir, proxiesFilePath), jsonListFile[models.UpstreamProxy]{NextID: store.NextProxyID, Items: store.Proxies}); err != nil {
-		return err
-	}
 	if err := writeJSONFile(filepath.Join(storeDir, masterKeysFilePath), jsonListFile[models.MasterKey]{NextID: store.NextMKID, Items: store.MasterKeys}); err != nil {
 		return err
 	}
-	if err := writeJSONFile(filepath.Join(storeDir, coreProfilesFilePath), jsonListFile[models.CoreProfile]{NextID: store.NextCoreProfileID, Items: store.CoreProfiles}); err != nil {
-		return err
-	}
 	if err := writeJSONFile(filepath.Join(storeDir, systemConfigFilePath), store.SystemConfig); err != nil {
-		return err
-	}
-	if err := writeJSONFile(filepath.Join(storeDir, externalProxySourcesPath), store.ExternalProxySources); err != nil {
-		return err
-	}
-	if err := writeJSONFile(filepath.Join(storeDir, proxyImportScheduleFilePath), store.ProxyImportSchedule); err != nil {
-		return err
-	}
-	if err := writeJSONFile(filepath.Join(storeDir, proxyImportLogsFilePath), store.ProxyImportLogs); err != nil {
 		return err
 	}
 	healthStateRaw, modelCatalogRaw, err := splitHealthState(store.HealthState)
@@ -718,18 +642,11 @@ func writeDataFile(path string, data []byte) error {
 
 func defaultStore() *Store {
 	return &Store{
-		APIKeys:              make([]models.APIKey, 0),
-		Proxies:              make([]models.UpstreamProxy, 0),
-		MasterKeys:           make([]models.MasterKey, 0),
-		CoreProfiles:         make([]models.CoreProfile, 0),
-		SystemConfig:         models.DefaultSystemConfig(),
-		ExternalProxySources: models.DefaultExternalProxySources(),
-		ProxyImportSchedule:  models.DefaultProxyImportSchedule(),
-		ProxyImportLogs:      make([]models.ProxyImportExecutionLog, 0),
-		NextAPIID:            1,
-		NextProxyID:          1,
-		NextMKID:             1,
-		NextCoreProfileID:    1,
+		APIKeys:      make([]models.APIKey, 0),
+		MasterKeys:   make([]models.MasterKey, 0),
+		SystemConfig: models.DefaultSystemConfig(),
+		NextAPIID:    1,
+		NextMKID:     1,
 	}
 }
 
@@ -740,41 +657,15 @@ func normalizeStore(store *Store) *Store {
 	if store.APIKeys == nil {
 		store.APIKeys = make([]models.APIKey, 0)
 	}
-	if store.Proxies == nil {
-		store.Proxies = make([]models.UpstreamProxy, 0)
-	}
 	if store.MasterKeys == nil {
 		store.MasterKeys = make([]models.MasterKey, 0)
 	}
-	if store.CoreProfiles == nil {
-		store.CoreProfiles = make([]models.CoreProfile, 0)
-	}
-	if store.ProxyImportLogs == nil {
-		store.ProxyImportLogs = make([]models.ProxyImportExecutionLog, 0)
-	}
-	for i := range store.Proxies {
-		store.Proxies[i] = models.NormalizeUpstreamProxy(store.Proxies[i])
-		if store.Proxies[i].TestHistory == nil {
-			store.Proxies[i].TestHistory = make([]models.ProxyTestRecord, 0)
-		}
-	}
-	for i := range store.CoreProfiles {
-		store.CoreProfiles[i] = models.NormalizeCoreProfile(store.CoreProfiles[i])
-	}
 	store.SystemConfig = models.NormalizeSystemConfig(store.SystemConfig)
-	store.ExternalProxySources = models.NormalizeExternalProxySources(store.ExternalProxySources)
-	store.ProxyImportSchedule = models.NormalizeProxyImportSchedule(store.ProxyImportSchedule)
 	if store.NextAPIID == 0 {
 		store.NextAPIID = nextAPIID(store.APIKeys)
 	}
-	if store.NextProxyID == 0 {
-		store.NextProxyID = nextProxyID(store.Proxies)
-	}
 	if store.NextMKID == 0 {
 		store.NextMKID = nextMasterKeyID(store.MasterKeys)
-	}
-	if store.NextCoreProfileID == 0 {
-		store.NextCoreProfileID = nextCoreProfileID(store.CoreProfiles)
 	}
 	return store
 }
@@ -789,31 +680,11 @@ func nextAPIID(keys []models.APIKey) uint {
 	return maxID + 1
 }
 
-func nextProxyID(proxies []models.UpstreamProxy) uint {
-	var maxID uint
-	for _, proxy := range proxies {
-		if proxy.ID > maxID {
-			maxID = proxy.ID
-		}
-	}
-	return maxID + 1
-}
-
 func nextMasterKeyID(keys []models.MasterKey) uint {
 	var maxID uint
 	for _, key := range keys {
 		if key.ID > maxID {
 			maxID = key.ID
-		}
-	}
-	return maxID + 1
-}
-
-func nextCoreProfileID(items []models.CoreProfile) uint {
-	var maxID uint
-	for _, item := range items {
-		if item.ID > maxID {
-			maxID = item.ID
 		}
 	}
 	return maxID + 1

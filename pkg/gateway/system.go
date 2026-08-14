@@ -22,22 +22,7 @@ func resolveStoredSystemConfig(store *db.Store) models.SystemConfig {
 	if store == nil {
 		return models.DefaultSystemConfig()
 	}
-	cfg := models.NormalizeSystemConfig(store.SystemConfig)
-	if cfg.UpstreamProxyID == 0 {
-		return cfg
-	}
-	for _, proxy := range store.Proxies {
-		if proxy.ID != cfg.UpstreamProxyID {
-			continue
-		}
-		proxyURL, err := buildProxyURLFromModel(proxy)
-		if err == nil {
-			cfg.UpstreamProxyURL = proxyURL
-		}
-		return cfg
-	}
-	cfg.UpstreamProxyID = 0
-	return cfg
+	return models.NormalizeSystemConfig(store.SystemConfig)
 }
 
 func buildUpstreamURL(cfg models.SystemConfig, endpointPath string) string {

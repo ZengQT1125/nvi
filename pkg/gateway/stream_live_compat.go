@@ -239,7 +239,6 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 				}
 				recordUpstreamRuntimeEvent(operation, stage, key, false, 0, message)
 				if attempt+1 < attemptBudget {
-					g.recoverNetworkPathForKey(ctx, cfg, key, err)
 					if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 						break
 					}
@@ -289,7 +288,6 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			lastErr = errors.New(parsedErr)
 			recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes))
 			if attempt+1 < attemptBudget {
-				g.recoverNetworkPathForKey(ctx, cfg, key, nil)
 				if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 					break
 				}

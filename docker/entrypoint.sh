@@ -10,13 +10,11 @@ if [ -z "$data_dir" ]; then
   esac
 fi
 
-xray_dir="${XRAY_CORE_DIR:-/app/bin/xray}"
 export GATEWAY_DATA_DIR="$data_dir"
-export XRAY_CORE_DIR="$xray_dir"
 export BACKEND_PORT="${BACKEND_PORT:-${PORT:-18080}}"
 export FRONTEND_PORT="${FRONTEND_PORT:-14000}"
 
-mkdir -p "$data_dir/store" "$data_dir/logs" "$xray_dir"
+mkdir -p "$data_dir/store" "$data_dir/logs"
 
 backend_pid=""
 frontend_pid=""

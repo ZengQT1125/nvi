@@ -4,11 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      xray_version:
-        description: "Xray core 版本，默认 v26.3.27"
-        required: false
-        default: "v26.3.27"
 
 env:
   REGISTRY: ghcr.io
@@ -46,8 +41,6 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          build-args: |
-            XRAY_VERSION=${{ inputs.xray_version || 'v26.3.27' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

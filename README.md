@@ -1,12 +1,12 @@
 # NVIDIA API Gateway
 
-基于 Go + Next.js + Xray 的 NVIDIA API 网关，提供多账号密钥管理、代理池、流式兼容、用量统计等功能。
+基于 Go + Next.js 的 NVIDIA API 网关，提供多账号密钥管理、流式兼容、用量统计等功能。出站流量统一走**系统默认出口**（不内置任何代理节点/Xray），适合在系统层面已配置代理的环境直接部署。
 
 ## 架构
 
-- **后端**：Go（Fiber），网关核心、密钥管理、代理池、调度
+- **后端**：Go（Fiber），网关核心、密钥管理、调度、协议转换（OpenAI / Claude / Gemini / Responses / Embeddings）
 - **前端**：Next.js 管理面板
-- **Xray**：内置代理核心，启动时按平台自动就绪
+- **网络出口**：统一使用系统默认出口（继承环境变量 `HTTP_PROXY` / `HTTPS_PROXY` 或直连），不再内置 Xray / 代理池 / 代理节点管理
 
 ## 自动构建
 
@@ -40,6 +40,7 @@ docker compose up -d
 - 后端端口：`18080`（默认，可用 `BACKEND_PORT` 修改）
 - 前端端口：`14000`（默认，可用 `FRONTEND_PORT` 修改）
 - 数据持久化在 Docker 卷 `gateway_data` 中
+- 版本号：`/health` 与 `/admin/version` 接口返回当前构建版本（管理后台侧边栏同步显示）
 
 ## 更新版本
 

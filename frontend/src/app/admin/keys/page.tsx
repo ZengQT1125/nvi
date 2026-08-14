@@ -26,9 +26,6 @@ interface APIKey {
   weight: number;
   status: string;
   probeOnly: boolean;
-  proxyId?: number;
-  proxyName?: string;
-  proxyGroup?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -44,24 +41,11 @@ interface DashboardResponse {
   stats: SchedulerStats;
 }
 
-interface UpstreamProxy {
-  id: number;
-  name: string;
-  group?: string;
-  type: string;
-  status: string;
-}
-
-interface ProxyListResponse {
-  proxies: UpstreamProxy[];
-}
-
 interface KeyFormState {
   name: string;
   key: string;
   weight: string;
   probeOnly: boolean;
-  proxyId: string;
 }
 
 interface ProbeInfo {
@@ -72,28 +56,14 @@ interface ProbeInfo {
   detail: string;
 }
 
-const emptyForm: KeyFormState = { name: "", key: "", weight: "1.0", probeOnly: false, proxyId: "" };
+const emptyForm: KeyFormState = { name: "", key: "", weight: "1.0", probeOnly: false };
 
 export default function APIKeysPage() {
   const { data, error, mutate } = useSWR<DashboardResponse>("/api/keys", fetcher, {
     refreshInterval: 5000,
   });
-  const { data: proxyData, mutate: mutateProxies } = useSWR<ProxyListResponse>("/api/proxies", fetcher, {
-    refreshInterval: 5000,
-  });
-
   const stats = data?.stats ?? { active: 0, cooling: 0, dead: 0 };
   const sortedKeys = useMemo(() => [...(data?.keys ?? [])].sort((a, b) => a.id - b.id), [data?.keys]);
-  const proxies = useMemo(() => [...(proxyData?.proxies ?? [])].sort((a, b) => a.id - b.id), [proxyData?.proxies]);
-  const bindableProxies = useMemo(() => proxies.filter((proxy) => proxy.status !== "Disabled"), [proxies]);
-  const proxyGroups = useMemo(() => {
-    const seen = new Set<string>();
-    for (const proxy of bindableProxies) {
-      if (!proxy.group?.trim()) continue;
-      seen.add(proxy.group.trim());
-    }
-    return Array.from(seen).sort((a, b) => a.localeCompare(b));
-  }, [bindableProxies]);
 
   const [createForm, setCreateForm] = useState<KeyFormState>(emptyForm);
   const [editingKeyId, setEditingKeyId] = useState<number | null>(null);
@@ -107,9 +77,6 @@ export default function APIKeysPage() {
   const [probeInfo, setProbeInfo] = useState<ProbeInfo | null>(null);
   const [importSummary, setImportSummary] = useState<string[]>([]);
   const [selectedKeyIds, setSelectedKeyIds] = useState<number[]>([]);
-  const [bulkProxyId, setBulkProxyId] = useState<string>("");
-  const [bulkProxyGroup, setBulkProxyGroup] = useState<string>("");
-  const [bulkBinding, setBulkBinding] = useState(false);
 
   useEffect(() => {
     if (!message && !errorMessage) return;
@@ -127,7 +94,7 @@ export default function APIKeysPage() {
   };
 
   const reloadData = async () => {
-    await Promise.all([mutate(), mutateProxies()]);
+    await mutate();
   };
 
   const activeSelectedKeyIds = useMemo(
@@ -179,7 +146,6 @@ export default function APIKeysPage() {
           key: createForm.key.trim(),
           weight: Number(createForm.weight),
           probeOnly: createForm.probeOnly,
-          proxyId: createForm.proxyId ? Number(createForm.proxyId) : 0,
         }),
       });
       const payload = await res.json().catch(() => null);
@@ -245,57 +211,10 @@ export default function APIKeysPage() {
     }
   };
 
-  const handleBulkProxyBinding = async (mode: "proxy" | "group" | "clear") => {
-    resetMessages();
-    if (activeSelectedKeyIds.length === 0) {
-      setErrorMessage("请先选择至少一个上游 key。")
-      return;
-    }
-    if (mode === "proxy" && !bulkProxyId) {
-      setErrorMessage("请先选择一个代理。")
-      return;
-    }
-    if (mode === "group" && !bulkProxyGroup) {
-      setErrorMessage("请先选择一个代理分组。")
-      return;
-    }
-    setBulkBinding(true);
-    try {
-      const body: Record<string, unknown> = { keyIds: activeSelectedKeyIds };
-      if (mode === "proxy") {
-        body.proxyId = Number(bulkProxyId);
-      } else if (mode === "group") {
-        body.proxyGroup = bulkProxyGroup;
-      } else {
-        body.proxyId = 0;
-      }
-      const res = await fetch("/api/keys/proxy", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const payload = await res.json().catch(() => null);
-      if (!res.ok) {
-        setErrorMessage(payload?.error || "批量绑定代理失败。")
-        return;
-      }
-      const updatedCount = payload?.result?.updatedCount ?? activeSelectedKeyIds.length;
-      setMessage(payload?.message || `已批量处理 ${updatedCount} 个 key。`)
-      clearSelectedKeys();
-      if (mode === "clear") {
-        setBulkProxyId("");
-        setBulkProxyGroup("");
-      }
-      await reloadData();
-    } finally {
-      setBulkBinding(false);
-    }
-  };
-
   const startEdit = (key: APIKey) => {
     resetMessages();
     setEditingKeyId(key.id);
-    setEditForm({ name: key.name, key: "", weight: key.weight.toString(), probeOnly: key.probeOnly, proxyId: key.proxyId ? String(key.proxyId) : "" });
+    setEditForm({ name: key.name, key: "", weight: key.weight.toString(), probeOnly: key.probeOnly });
   };
 
   const cancelEdit = () => {
@@ -323,7 +242,6 @@ export default function APIKeysPage() {
           key: editForm.key.trim(),
           weight: Number(editForm.weight),
           probeOnly: editForm.probeOnly,
-          proxyId: editForm.proxyId ? Number(editForm.proxyId) : 0,
         }),
       });
       const payload = await res.json().catch(() => null);
@@ -459,42 +377,6 @@ export default function APIKeysPage() {
         </div>
       ) : null}
 
-      <Card className="border border-slate-200/70 bg-white/90 shadow-sm">
-        <CardHeader>
-          <CardTitle>{"批量绑定代理"}</CardTitle>
-          <CardDescription>{"先勾选下面的上游 key，再统一绑定到某个代理，或一键清空代理绑定回到全局代理。"}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="text-sm text-slate-600">{"已选择 "}<span className="font-semibold text-slate-900">{activeSelectedKeyIds.length}</span>{" 个 key"}</div>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={toggleSelectAllVisible}>{allVisibleSelected ? "取消全选当前列表" : "全选当前列表"}</Button>
-              <Button variant="outline" size="sm" onClick={clearSelectedKeys}>{"清空选择"}</Button>
-            </div>
-          </div>
-          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
-            <Select value={bulkProxyId} onChange={(e) => setBulkProxyId(e.target.value)}>
-              <option value="">{"选择要绑定的代理"}</option>
-              {bindableProxies.map((proxy) => (
-                <option key={proxy.id} value={String(proxy.id)}>{proxy.name} {"·"} {proxy.type}{proxy.group ? ` · ${proxy.group}` : ""}</option>
-              ))}
-            </Select>
-            <Button onClick={() => handleBulkProxyBinding("proxy")} disabled={bulkBinding || activeSelectedKeyIds.length === 0 || !bulkProxyId}>{bulkBinding ? "处理中..." : "按代理批量绑定"}</Button>
-            <Button variant="outline" onClick={() => handleBulkProxyBinding("clear")} disabled={bulkBinding || activeSelectedKeyIds.length === 0}>{"批量清空代理"}</Button>
-          </div>
-          <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-            <Select value={bulkProxyGroup} onChange={(e) => setBulkProxyGroup(e.target.value)}>
-              <option value="">{"选择要轮询分配的分组"}</option>
-              {proxyGroups.map((group) => (
-                <option key={group} value={group}>{group}</option>
-              ))}
-            </Select>
-            <Button variant="outline" onClick={() => handleBulkProxyBinding("group")} disabled={bulkBinding || activeSelectedKeyIds.length === 0 || !bulkProxyGroup}>{bulkBinding ? "处理中..." : "按分组轮询绑定"}</Button>
-          </div>
-          <div className="text-xs leading-6 text-slate-500">{"没有绑定代理的 key，会继续跟随系统设置里的全局上游代理；如果全局代理也为空，就按环境变量或直连逻辑处理。"}</div>
-        </CardContent>
-      </Card>
-
       <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
         <Card className="border border-slate-200/70 bg-white/90 shadow-sm">
           <CardHeader>
@@ -506,12 +388,6 @@ export default function APIKeysPage() {
               <Input value={createForm.name} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} placeholder="例如：NVIDIA-01" />
               <Input type="password" value={createForm.key} onChange={(e) => setCreateForm({ ...createForm, key: e.target.value })} placeholder="直接粘贴完整 nvapi-..." />
               <Input type="number" min="0.1" step="0.1" value={createForm.weight} onChange={(e) => setCreateForm({ ...createForm, weight: e.target.value })} placeholder="1.0" />
-              <Select value={createForm.proxyId} onChange={(e) => setCreateForm({ ...createForm, proxyId: e.target.value })}>
-                <option value="">跟随全局代理 / 当前全局直连</option>
-                {bindableProxies.map((proxy) => (
-                  <option key={proxy.id} value={String(proxy.id)}>{proxy.name} · {proxy.type}</option>
-                ))}
-              </Select>
               <label className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 <div>
                   <div className="font-medium text-slate-900">{"健康专用"}</div>
@@ -586,7 +462,6 @@ export default function APIKeysPage() {
                       <div className="mt-3 grid gap-2 text-sm text-slate-500 md:grid-cols-2 xl:grid-cols-4">
                         <div>权重：{key.weight.toFixed(1)}</div>
                         <div>{"用途："}{key.probeOnly ? "健康检查专用" : "参与业务调度"}</div>
-                        <div>{"代理："}{key.proxyName ? key.proxyName : "跟随全局代理 / 全局直连"}</div>
                         <div>创建时间：{formatDate(key.createdAt)}</div>
                         <div className="md:col-span-2">更新时间：{formatDate(key.updatedAt)}</div>
                       </div>
@@ -605,12 +480,6 @@ export default function APIKeysPage() {
                       <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} placeholder="名称" />
                       <Input type="password" value={editForm.key} onChange={(e) => setEditForm({ ...editForm, key: e.target.value })} placeholder="留空则不修改 key" />
                       <Input type="number" min="0.1" step="0.1" value={editForm.weight} onChange={(e) => setEditForm({ ...editForm, weight: e.target.value })} placeholder="权重" />
-                      <Select value={editForm.proxyId} onChange={(e) => setEditForm({ ...editForm, proxyId: e.target.value })}>
-                        <option value="">跟随全局代理 / 当前全局直连</option>
-                        {bindableProxies.map((proxy) => (
-                          <option key={proxy.id} value={String(proxy.id)}>{proxy.name} · {proxy.type}</option>
-                        ))}
-                      </Select>
                       <label className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
                         <span>{"健康专用"}</span>
                         <Switch checked={editForm.probeOnly} onCheckedChange={(value) => setEditForm({ ...editForm, probeOnly: value })} />

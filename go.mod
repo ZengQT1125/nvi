@@ -1,6 +1,6 @@
 module nvidia-api-gateway
 
-go 1.23.0
+go 1.23
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.12
@@ -24,7 +24,5 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
 )
-

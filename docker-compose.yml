@@ -20,10 +20,6 @@ services:
       FRONTEND_PORT: 14000
       API_BASE_URL: http://127.0.0.1:18080
       GATEWAY_DATA_DIR: /app/var/data
-      XRAY_CORE_DIR: /app/bin/xray
-      XRAY_BIN_PATH: /app/bin/xray/xray
-      XRAY_LOG_LEVEL: ${XRAY_LOG_LEVEL:-error}
-      # XRAY_VERSION 已在 GitHub Actions 构建时固化为镜像参数，运行时不需再指定
     ports:
       - "${BACKEND_PORT:-18080}:18080"
       - "${FRONTEND_PORT:-14000}:14000"

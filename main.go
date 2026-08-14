@@ -102,8 +102,6 @@ func serveBackend() {
 	}
 
 	sched := scheduler.NewScheduler(redisClient)
-	proxyImportManager := gateway.NewProxyImportManager(sched)
-	xrayManager := gateway.NewXrayCoreManager(sched)
 	if err := gateway.RestoreRecoverableStatuses(context.Background(), sched); err != nil {
 		log.Printf("initial status restore skipped: %v", err)
 		if loadErr := gateway.LoadActiveKeys(context.Background(), sched); loadErr != nil {
@@ -111,12 +109,10 @@ func serveBackend() {
 		}
 	}
 	go gateway.StartSchedulerRefresher(context.Background(), sched, 5*time.Minute)
-	go proxyImportManager.Start(context.Background())
-	go xrayManager.Start(context.Background())
 
 	semanticCache := cache.NewSemanticCache(redisClient)
 	usageTracker := middleware.NewUsageTracker(redisClient)
-	gw := gateway.NewGateway(sched, semanticCache, usageTracker, xrayManager)
+	gw := gateway.NewGateway(sched, semanticCache, usageTracker)
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	registerHealthRoute(app)
@@ -126,38 +122,10 @@ func serveBackend() {
 
 	admin := app.Group("/admin", middleware.AdminAuthMiddleware())
 	admin.Get("/auth/check", gateway.AdminAuthCheck())
+	admin.Get("/version", gateway.AdminVersion())
 	admin.Post("/keys", gateway.AddAPIKey(sched))
 	admin.Post("/keys/import", gateway.ImportAPIKeys(sched))
-	admin.Put("/keys/proxy", gateway.BindAPIKeysProxy(sched))
 	admin.Get("/keys", gateway.GetAPIKeys)
-	admin.Get("/proxies", gateway.GetUpstreamProxies)
-	admin.Post("/proxies", gateway.AddUpstreamProxy(sched))
-	admin.Post("/proxies/export", gateway.ExportUpstreamProxies)
-	admin.Delete("/proxies/batch", gateway.BulkDeleteUpstreamProxies(sched, xrayManager))
-	admin.Get("/proxies/import/free", gateway.GetProxyImportState(proxyImportManager))
-	admin.Post("/proxies/import/free", gateway.ImportFreeProxies(proxyImportManager))
-	admin.Put("/proxies/import/free", gateway.UpdateProxyImportSchedule(proxyImportManager))
-	admin.Delete("/proxies/import/free/logs", gateway.ClearProxyImportLogs())
-	admin.Get("/proxies/import/sources", gateway.GetExternalProxySources)
-	admin.Put("/proxies/import/sources", gateway.UpdateExternalProxySources)
-	admin.Get("/core/profiles", gateway.GetCoreProfiles(xrayManager))
-	admin.Post("/core/profiles", gateway.CreateCoreProfile(xrayManager))
-	admin.Post("/core/profiles/import", gateway.ImportCoreProfiles(xrayManager))
-	admin.Post("/core/profiles/test", gateway.BatchTestCoreProfiles(xrayManager))
-	admin.Delete("/core/profiles/batch", gateway.BulkDeleteCoreProfiles(xrayManager))
-	admin.Get("/core/runtime", gateway.GetCoreRuntime(xrayManager))
-	admin.Get("/core/runtime/logs", gateway.GetCoreRuntimeLogs(xrayManager))
-	admin.Delete("/core/runtime/logs", gateway.ClearCoreRuntimeLogs(xrayManager))
-	admin.Post("/core/runtime/reload", gateway.ReloadCoreRuntime(xrayManager))
-	admin.Put("/core/profiles/:id", gateway.UpdateCoreProfile(xrayManager))
-	admin.Patch("/core/profiles/:id/status", gateway.UpdateCoreProfileStatus(xrayManager))
-	admin.Delete("/core/profiles/:id", gateway.DeleteCoreProfile(xrayManager))
-	admin.Post("/core/profiles/:id/test", gateway.TestCoreProfile(xrayManager))
-	admin.Put("/proxies/:id", gateway.UpdateUpstreamProxy(sched))
-	admin.Patch("/proxies/status", gateway.BulkUpdateUpstreamProxyStatus(sched))
-	admin.Patch("/proxies/:id/status", gateway.UpdateUpstreamProxyStatus(sched))
-	admin.Delete("/proxies/:id", gateway.DeleteUpstreamProxy(sched))
-	admin.Post("/proxies/test", gateway.TestUpstreamProxy)
 	admin.Put("/keys/:id", gateway.UpdateAPIKey(sched))
 	admin.Delete("/keys/:id", gateway.DeleteAPIKey(sched))
 	admin.Patch("/keys/:id/status", gateway.UpdateAPIKeyStatus(sched))
@@ -172,7 +140,6 @@ func serveBackend() {
 	admin.Post("/system/reload", gateway.ReloadSystem(sched))
 	admin.Get("/system/stats", gateway.SchedulerStats(sched))
 	admin.Get("/system/config", gateway.GetSystemConfig)
-	admin.Get("/system/proxy-options", gateway.GetUpstreamProxyOptions)
 	admin.Put("/system/config", gateway.UpdateSystemConfig(sched))
 	admin.Get("/upstream/models", gateway.GetUpstreamModels())
 	admin.Get("/upstream/runtime", gateway.GetUpstreamRuntime(sched))
@@ -206,6 +173,7 @@ func registerHealthRoute(app *fiber.App) {
 		return c.JSON(fiber.Map{
 			"status":  "ok",
 			"service": "nvidia-api-gateway",
+			"version": gateway.GatewayVersion,
 		})
 	})
 }

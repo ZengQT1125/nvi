@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -8,8 +9,6 @@ import { cn } from "@/lib/utils";
 const navItems = [
   ["\u603b\u89c8", "/admin"],
   ["API \u5bc6\u94a5", "/admin/keys"],
-  ["\u4ee3\u7406\u6c60", "/admin/proxies"],
-  ["Xray \u8282\u70b9", "/admin/core"],
   ["\u81ea\u5b9a\u4e49 API Key", "/admin/master-keys"],
   ["\u7cfb\u7edf\u8bbe\u7f6e", "/admin/system"],
   ["\u5065\u5eb7\u68c0\u67e5", "/admin/health"],
@@ -29,6 +28,24 @@ export default function AdminShell({
   children: React.ReactNode;
 }>) {
   const pathname = usePathname();
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/version", { cache: "no-store" })
+      .then((res) => res.json().catch(() => null))
+      .then((data) => {
+        if (!cancelled && data?.version) {
+          setVersion(data.version);
+        }
+      })
+      .catch(() => {
+        /* 获取失败时保留默认版本号 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="h-screen overflow-hidden bg-[linear-gradient(180deg,#f8fafc_0%,#eef4ff_40%,#f8fafc_100%)] text-slate-900">
@@ -72,8 +89,8 @@ export default function AdminShell({
 
           <div className="rounded-2xl border border-slate-200/70 bg-white/80 p-4 text-xs text-slate-500 shadow-sm">
             <div className="font-medium uppercase tracking-[0.22em] text-slate-400">版本</div>
-            <div className="mt-2 text-sm text-slate-800">v3.0.0</div>
-            <div className="mt-2 leading-6">统一管理上游 key、网关 API Key、协议出口和健康检查。</div>
+            <div className="mt-2 text-sm text-slate-800">{version || "v3.1.0"}</div>
+            <div className="mt-2 leading-6">统一管理上游 key、网关 API Key、协议出口和健康检查。出站流量统一走系统默认出口。</div>
           </div>
         </aside>
 
