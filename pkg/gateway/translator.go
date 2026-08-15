@@ -20,6 +20,10 @@ type ChatRequest struct {
 	Stream      bool          `json:"stream,omitempty"`
 }
 
+// forcedUpstreamTemperature 统一强制发往上游的请求固定使用该温度值，
+// 覆盖客户端传入的任何 temperature，用于稳定上游响应速度与输出风格。
+const forcedUpstreamTemperature = 0.2
+
 type openAIMessagePayload struct {
 	Role      string           `json:"role"`
 	Content   string           `json:"content,omitempty"`
@@ -90,6 +94,8 @@ func TranslateRequest(body []byte) ([]byte, *ChatRequest, string, *float64, erro
 
 	prompt := buildPromptFromMessages(messages)
 	stream, _ := boolValue(reqMap["stream"])
+	// 固定温度：强制覆盖客户端传入值
+	reqMap["temperature"] = forcedUpstreamTemperature
 	temperature, _ := floatPtrValue(reqMap["temperature"])
 
 	newBody, err := json.Marshal(reqMap)
@@ -124,9 +130,8 @@ func TranslateClaudeRequest(body []byte) ([]byte, string, *float64, bool, string
 	if v, ok := boolValue(reqMap["stream"]); ok {
 		openAIReq["stream"] = v
 	}
-	if temp, ok := floatValue(reqMap["temperature"]); ok {
-		openAIReq["temperature"] = temp
-	}
+	// 固定温度：强制覆盖客户端传入值
+	openAIReq["temperature"] = forcedUpstreamTemperature
 	if maxTokens, ok := intValue(reqMap["max_tokens"]); ok {
 		// 确保 max_tokens 足够大，避免长回复被截断导致 Claude Code 中断
 		// 注意：这是单次输出上限，不是上下文长度。32768 足够覆盖大部分模型
@@ -204,9 +209,6 @@ func TranslateGeminiRequest(routeTarget string, body []byte, stream bool) ([]byt
 		})
 	}
 	if generationConfig, ok := reqMap["generationConfig"].(map[string]any); ok {
-		if temp, ok := floatValue(generationConfig["temperature"]); ok {
-			openAIReq["temperature"] = temp
-		}
 		if maxTokens, ok := intValue(generationConfig["maxOutputTokens"]); ok {
 			if maxTokens < 32768 {
 				maxTokens = 32768
@@ -219,6 +221,8 @@ func TranslateGeminiRequest(routeTarget string, body []byte, stream bool) ([]byt
 		// 没有 generationConfig 时也设置 max_tokens
 		openAIReq["max_tokens"] = 32768
 	}
+	// 固定温度：强制覆盖客户端 generationConfig.temperature
+	openAIReq["temperature"] = forcedUpstreamTemperature
 	contents, ok := reqMap["contents"].([]any)
 	if !ok || len(contents) == 0 {
 		return nil, "", nil, "", fmt.Errorf("contents are required")

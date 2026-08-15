@@ -31,9 +31,8 @@ func TranslateResponsesRequest(body []byte) ([]byte, *translatedResponsesRequest
 	if stream, ok := boolValue(reqMap["stream"]); ok {
 		openAIReq["stream"] = stream
 	}
-	if temperature, ok := floatValue(reqMap["temperature"]); ok {
-		openAIReq["temperature"] = temperature
-	}
+	// 固定温度：强制覆盖客户端传入值
+	openAIReq["temperature"] = forcedUpstreamTemperature
 	if maxOutputTokens, ok := intValue(reqMap["max_output_tokens"]); ok {
 		openAIReq["max_tokens"] = maxOutputTokens
 	} else if maxTokens, ok := intValue(reqMap["max_tokens"]); ok {
