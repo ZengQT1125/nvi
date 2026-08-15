@@ -654,7 +654,7 @@ func newAPIKeyResponse(key models.APIKey) apiKeyResponse {
 
 // GatewayVersion 由构建流程注入，可在编译时通过 -ldflags 覆盖：
 //   go build -ldflags "-X nvidia-api-gateway/pkg/gateway.GatewayVersion=v1.2.3" ./main.go
-var GatewayVersion = "v3.3.0"
+var GatewayVersion = "v3.4.0"
 
 // AdminVersion 供管理后台显示后端版本号。
 // 该路由挂在 /admin 组内，已由 AdminAuthMiddleware 校验 X-Admin-Token。
