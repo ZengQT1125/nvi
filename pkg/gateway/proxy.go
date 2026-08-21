@@ -60,11 +60,12 @@ func NewGateway(sched *scheduler.Scheduler, semanticCache *cache.SemanticCache, 
 	}
 }
 
-func (g *Gateway) acquirePreferredKeyWithQueue(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, maxConcurrency int, allowEarlyHeaders bool, operation, affinityID string) (string, bool, error) {
+func (g *Gateway) acquirePreferredKeyWithQueue(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, maxConcurrency int, allowEarlyHeaders bool, operation, affinityID, model string) (string, bool, error) {
 	affinityID = strings.TrimSpace(affinityID)
+	model = strings.TrimSpace(model)
 	if affinityID != "" && g != nil && g.scheduler != nil {
 		if preferredKey, ok := globalConversationAffinityStore.get(affinityID); ok {
-			acquired, err := g.scheduler.TryAcquireSpecificKey(ctx, preferredKey, maxConcurrency)
+			acquired, err := g.scheduler.TryAcquireSpecificKey(ctx, preferredKey, maxConcurrency, model)
 			if err != nil {
 				recordUpstreamRuntimeEvent(operation, "scheduler_error", preferredKey, false, 0, err.Error())
 				return "", false, err
@@ -75,7 +76,7 @@ func (g *Gateway) acquirePreferredKeyWithQueue(ctx context.Context, w http.Respo
 			}
 		}
 	}
-	key, err := g.acquireKeyWithQueue(ctx, w, flusher, maxConcurrency, allowEarlyHeaders, operation)
+	key, err := g.acquireKeyWithQueue(ctx, w, flusher, maxConcurrency, allowEarlyHeaders, operation, model)
 	return key, false, err
 }
 
@@ -97,7 +98,7 @@ func (g *Gateway) clearConversationKeyBinding(affinityID, key string) {
 	globalConversationAffinityStore.clear(strings.TrimSpace(affinityID), strings.TrimSpace(key))
 }
 
-func (g *Gateway) acquireKeyWithQueue(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, maxConcurrency int, allowEarlyHeaders bool, operation string) (string, error) {
+func (g *Gateway) acquireKeyWithQueue(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, maxConcurrency int, allowEarlyHeaders bool, operation, model string) (string, error) {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 3
 	}
@@ -111,7 +112,7 @@ func (g *Gateway) acquireKeyWithQueue(ctx context.Context, w http.ResponseWriter
 	recoveryAttempted := false
 
 	for {
-		key, err := g.scheduler.AcquireKey(ctx, maxConcurrency)
+		key, err := g.scheduler.AcquireKey(ctx, maxConcurrency, model)
 		if err != nil {
 			recordUpstreamRuntimeEvent(operation, "scheduler_error", "", false, 0, err.Error())
 			return "", err
@@ -404,7 +405,7 @@ func (g *Gateway) executeOpenAINonStream(ctx context.Context, translatedBody []b
 			applyProxyHeaders(&result, diagnostics.headers())
 			return result
 		}
-		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "chat.nonstream", affinityID)
+		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "chat.nonstream", affinityID, model)
 		if key != "" {
 			diagnostics.noteSelectedKey(key)
 			g.refreshConversationKeyBinding(affinityID, key, false)
@@ -521,7 +522,7 @@ func (g *Gateway) executeOpenAIStream(ctx context.Context, w http.ResponseWriter
 			w.WriteHeader(499)
 			return
 		}
-		key, _, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "chat.stream", affinityID)
+		key, _, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "chat.stream", affinityID, model)
 		if key != "" {
 			diagnostics.noteSelectedKey(key)
 			g.refreshConversationKeyBinding(affinityID, key, false)
@@ -693,7 +694,7 @@ func (g *Gateway) fetchUpstreamModels(ctx context.Context) proxyResult {
 	diagnostics := newUpstreamAttemptDiagnostics("models.list")
 	lastErr := "upstream request failed"
 	for i := 0; i < crossKeyAttemptBudget(cfg.MaxRetries); i++ {
-		key, _, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "models.list", "")
+		key, _, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "models.list", "", "")
 		if key != "" {
 			diagnostics.noteSelectedKey(key)
 		}
@@ -788,6 +789,7 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 		case upstreamFailurePolicyKeyRateLimited:
 			recordUpstreamRuntimeEventFull(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			g.markCooling(ctx, key, resp.Header.Get("Retry-After"))
+			g.markModelCooling(ctx, key, model, resp.Header.Get("Retry-After"))
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusCooling)
 			g.clearConversationKeyBinding(affinityID, key)
 			return proxyResult{}, true
@@ -862,10 +864,25 @@ func (g *Gateway) streamHTTPClient(cfg models.SystemConfig, key string) *http.Cl
 
 func (g *Gateway) markCooling(ctx context.Context, key, retryAfter string) {
 	duration := 60 * time.Second
-	if seconds, err := time.ParseDuration(strings.TrimSpace(retryAfter) + "s"); err == nil {
+	if seconds, err := time.ParseDuration(strings.TrimSpace(retryAfter) + "s"); err == nil && seconds > duration {
 		duration = seconds
 	}
 	_ = g.scheduler.MarkCooling(ctx, key, duration)
+}
+
+// markModelCooling 给 (key, model) 打模型级冷却：
+// 触发 429 的那个模型冷却更久（默认 3 分钟，尊重上游更长的 Retry-After），
+// 同 key 的其他模型只受 key 级冷却（60s）约束，可以更早恢复。
+func (g *Gateway) markModelCooling(ctx context.Context, key, model, retryAfter string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	duration := 3 * time.Minute
+	if seconds, err := time.ParseDuration(strings.TrimSpace(retryAfter) + "s"); err == nil && seconds > duration {
+		duration = seconds
+	}
+	_ = g.scheduler.MarkModelCooling(ctx, key, model, duration)
 }
 
 func setStreamFlag(body []byte, stream bool) []byte {

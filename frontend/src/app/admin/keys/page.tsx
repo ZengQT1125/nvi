@@ -65,6 +65,21 @@ export default function APIKeysPage() {
   const stats = data?.stats ?? { active: 0, cooling: 0, dead: 0 };
   const sortedKeys = useMemo(() => [...(data?.keys ?? [])].sort((a, b) => a.id - b.id), [data?.keys]);
 
+  // 分页：当前页 / 每页条数，页码在数据变化后自动收敛到有效范围
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  const totalPages = Math.max(1, Math.ceil(sortedKeys.length / pageSize));
+  const paginatedKeys = useMemo(() => {
+    const start = pageIndex * pageSize;
+    return sortedKeys.slice(start, start + pageSize);
+  }, [sortedKeys, pageIndex, pageSize]);
+
+  useEffect(() => {
+    if (pageIndex >= totalPages) {
+      setPageIndex(Math.max(0, totalPages - 1));
+    }
+  }, [pageIndex, totalPages]);
+
   const [createForm, setCreateForm] = useState<KeyFormState>(emptyForm);
   const [editingKeyId, setEditingKeyId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<KeyFormState>(emptyForm);
@@ -102,7 +117,7 @@ export default function APIKeysPage() {
     [selectedKeyIds, sortedKeys],
   );
 
-  const allVisibleSelected = sortedKeys.length > 0 && sortedKeys.every((item) => activeSelectedKeyIds.includes(item.id));
+  const allVisibleSelected = paginatedKeys.length > 0 && paginatedKeys.every((item) => activeSelectedKeyIds.includes(item.id));
 
   const toggleKeySelection = (id: number, checked: boolean) => {
     setSelectedKeyIds((current) => {
@@ -115,10 +130,14 @@ export default function APIKeysPage() {
 
   const toggleSelectAllVisible = () => {
     if (allVisibleSelected) {
-      setSelectedKeyIds([]);
+      // 取消选中：只清掉当前页的选中，跨页选中保留
+      const pageIds = new Set(paginatedKeys.map((item) => item.id));
+      setSelectedKeyIds((current) => current.filter((id) => !pageIds.has(id)));
       return;
     }
-    setSelectedKeyIds(sortedKeys.map((item) => item.id));
+    // 全选当前页，跨页已有选中保留
+    const pageIds = paginatedKeys.map((item) => item.id);
+    setSelectedKeyIds((current) => Array.from(new Set([...current, ...pageIds])).sort((a, b) => a - b));
   };
 
   const clearSelectedKeys = () => {
@@ -517,10 +536,31 @@ export default function APIKeysPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">读取 key 列表失败，请稍后重试。</div> : null}
+          {sortedKeys.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-slate-500">共 {sortedKeys.length} 个 key · 第 {pageIndex + 1} / {totalPages} 页</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select
+                  value={pageSize.toString()}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPageIndex(0);
+                  }}
+                  className="h-9 w-auto rounded-xl px-2 text-xs"
+                >
+                  {[10, 20, 50, 100].map((size) => (
+                    <option key={size} value={size}>每页 {size}</option>
+                  ))}
+                </Select>
+                <Button variant="outline" size="sm" disabled={pageIndex <= 0} onClick={() => setPageIndex((i) => Math.max(0, i - 1))}>上一页</Button>
+                <Button variant="outline" size="sm" disabled={pageIndex >= totalPages - 1} onClick={() => setPageIndex((i) => Math.min(totalPages - 1, i + 1))}>下一页</Button>
+              </div>
+            </div>
+          ) : null}
           {sortedKeys.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">当前还没有上游 key。</div>
           ) : (
-            sortedKeys.map((key) => {
+            paginatedKeys.map((key) => {
               const isEditing = editingKeyId === key.id;
               const isBusy = busyKeyId === key.id;
               return (

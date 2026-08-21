@@ -22,10 +22,12 @@ local active_keys = KEYS[1]
 local dead_keys = KEYS[2]
 local current_weights = KEYS[3]
 local cooling_keys = KEYS[4]
+local model_cooling_keys = KEYS[5]
 
 local max_concurrency = tonumber(ARGV[1])
 local lock_ttl = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
+local model = ARGV[4]
 
 local weighted = redis.call("ZRANGE", active_keys, 0, -1, "WITHSCORES")
 local selected_key = ""
@@ -38,15 +40,21 @@ for i = 1, #weighted, 2 do
 	if redis.call("SISMEMBER", dead_keys, key) == 0 then
 		local cool_until = redis.call("HGET", cooling_keys, key)
 		if (not cool_until) or tonumber(cool_until) < now then
-			local c_key = "concurrency:" .. key
-			local current = tonumber(redis.call("GET", c_key) or "0")
-			if current < max_concurrency then
-				local new_weight = tonumber(redis.call("HGET", current_weights, key) or "0") + weight
-				redis.call("HSET", current_weights, key, new_weight)
-				total_weight = total_weight + weight
-				if (not selected_weight) or new_weight > selected_weight then
-					selected_key = key
-					selected_weight = new_weight
+			local model_cool_until = nil
+			if model ~= "" then
+				model_cool_until = redis.call("HGET", model_cooling_keys, key .. "|" .. model)
+			end
+			if (not model_cool_until) or tonumber(model_cool_until) < now then
+				local c_key = "concurrency:" .. key
+				local current = tonumber(redis.call("GET", c_key) or "0")
+				if current < max_concurrency then
+					local new_weight = tonumber(redis.call("HGET", current_weights, key) or "0") + weight
+					redis.call("HSET", current_weights, key, new_weight)
+					total_weight = total_weight + weight
+					if (not selected_weight) or new_weight > selected_weight then
+						selected_key = key
+						selected_weight = new_weight
+					end
 				end
 			end
 		end
@@ -77,11 +85,13 @@ return 1
 local active_keys = KEYS[1]
 local dead_keys = KEYS[2]
 local cooling_keys = KEYS[3]
+local model_cooling_keys = KEYS[4]
 
 local key = ARGV[1]
 local max_concurrency = tonumber(ARGV[2])
 local lock_ttl = tonumber(ARGV[3])
 local now = tonumber(ARGV[4])
+local model = ARGV[5]
 
 if redis.call("ZSCORE", active_keys, key) == false then
 	return 0
@@ -92,6 +102,12 @@ end
 local cool_until = redis.call("HGET", cooling_keys, key)
 if cool_until and tonumber(cool_until) >= now then
 	return 0
+end
+if model ~= "" then
+	local model_cool_until = redis.call("HGET", model_cooling_keys, key .. "|" .. model)
+	if model_cool_until and tonumber(model_cool_until) >= now then
+		return 0
+	end
 end
 local c_key = "concurrency:" .. key
 local current = tonumber(redis.call("GET", c_key) or "0")
@@ -121,16 +137,20 @@ type Scheduler struct {
 	mu          sync.Mutex
 	active      []localKey
 	cooling     map[string]int64
-	dead        map[string]struct{}
-	concurrency map[string]int
+	// modelCooling 记录 (key, model) 维度的冷却，键为 key .. "|" .. model。
+	// 同模型 429 后冷却比 key 级更久，避免 60s 恢复后同一模型立刻又撞限流。
+	modelCooling map[string]int64
+	dead         map[string]struct{}
+	concurrency  map[string]int
 }
 
 func NewScheduler(client *redis.Client) *Scheduler {
 	return &Scheduler{
-		client:      client,
-		cooling:     make(map[string]int64),
-		dead:        make(map[string]struct{}),
-		concurrency: make(map[string]int),
+		client:       client,
+		cooling:      make(map[string]int64),
+		modelCooling: make(map[string]int64),
+		dead:         make(map[string]struct{}),
+		concurrency:  make(map[string]int),
 	}
 }
 
@@ -157,7 +177,8 @@ func (s *Scheduler) AddKey(ctx context.Context, key string, weight float64) erro
 	return s.client.ZAdd(ctx, "nvidia:keys:active", redis.Z{Score: weight, Member: key}).Err()
 }
 
-func (s *Scheduler) AcquireKey(ctx context.Context, maxConcurrency int) (string, error) {
+func (s *Scheduler) AcquireKey(ctx context.Context, maxConcurrency int, model string) (string, error) {
+	model = strings.TrimSpace(model)
 	if s == nil {
 		return "", nil
 	}
@@ -168,6 +189,11 @@ func (s *Scheduler) AcquireKey(ctx context.Context, maxConcurrency int) (string,
 		for key, until := range s.cooling {
 			if until < now {
 				delete(s.cooling, key)
+			}
+		}
+		for field, until := range s.modelCooling {
+			if until < now {
+				delete(s.modelCooling, field)
 			}
 		}
 
@@ -181,6 +207,11 @@ func (s *Scheduler) AcquireKey(ctx context.Context, maxConcurrency int) (string,
 			}
 			if until, cooling := s.cooling[item.key]; cooling && until >= now {
 				continue
+			}
+			if model != "" {
+				if until, cooling := s.modelCooling[item.key+"|"+model]; cooling && until >= now {
+					continue
+				}
 			}
 			if s.concurrency[item.key] >= maxConcurrency {
 				continue
@@ -200,8 +231,8 @@ func (s *Scheduler) AcquireKey(ctx context.Context, maxConcurrency int) (string,
 		return s.active[selectedIndex].key, nil
 	}
 	res, err := LuaAcquireKey.Run(ctx, s.client,
-		[]string{"nvidia:keys:active", "nvidia:keys:dead", "key_current_weight", "key_cooling"},
-		maxConcurrency, 60, time.Now().Unix()).Result()
+		[]string{"nvidia:keys:active", "nvidia:keys:dead", "key_current_weight", "key_cooling", "model_cooling"},
+		maxConcurrency, 60, time.Now().Unix(), model).Result()
 	if err == redis.Nil {
 		return "", nil
 	}
@@ -215,11 +246,12 @@ func (s *Scheduler) AcquireKey(ctx context.Context, maxConcurrency int) (string,
 	return str, nil
 }
 
-func (s *Scheduler) TryAcquireSpecificKey(ctx context.Context, key string, maxConcurrency int) (bool, error) {
+func (s *Scheduler) TryAcquireSpecificKey(ctx context.Context, key string, maxConcurrency int, model string) (bool, error) {
 	if s == nil {
 		return false, nil
 	}
 	key = strings.TrimSpace(key)
+	model = strings.TrimSpace(model)
 	if key == "" {
 		return false, nil
 	}
@@ -233,6 +265,11 @@ func (s *Scheduler) TryAcquireSpecificKey(ctx context.Context, key string, maxCo
 		for coolingKey, until := range s.cooling {
 			if until < now {
 				delete(s.cooling, coolingKey)
+			}
+		}
+		for field, until := range s.modelCooling {
+			if until < now {
+				delete(s.modelCooling, field)
 			}
 		}
 		active := false
@@ -251,6 +288,11 @@ func (s *Scheduler) TryAcquireSpecificKey(ctx context.Context, key string, maxCo
 		if until, cooling := s.cooling[key]; cooling && until >= now {
 			return false, nil
 		}
+		if model != "" {
+			if until, cooling := s.modelCooling[key+"|"+model]; cooling && until >= now {
+				return false, nil
+			}
+		}
 		if s.concurrency[key] >= maxConcurrency {
 			return false, nil
 		}
@@ -258,8 +300,8 @@ func (s *Scheduler) TryAcquireSpecificKey(ctx context.Context, key string, maxCo
 		return true, nil
 	}
 	res, err := LuaTryAcquireSpecificKey.Run(ctx, s.client,
-		[]string{"nvidia:keys:active", "nvidia:keys:dead", "key_cooling"},
-		key, maxConcurrency, 60, time.Now().Unix()).Result()
+		[]string{"nvidia:keys:active", "nvidia:keys:dead", "key_cooling", "model_cooling"},
+		key, maxConcurrency, 60, time.Now().Unix(), model).Result()
 	if err == redis.Nil {
 		return false, nil
 	}
@@ -305,6 +347,24 @@ func (s *Scheduler) MarkCooling(ctx context.Context, key string, duration time.D
 	return s.client.HSet(ctx, "key_cooling", key, coolUntil).Err()
 }
 
+// MarkModelCooling 记录 (key, model) 维度的冷却。
+// 模型级冷却独立于 key 级冷却：触发限流的那个模型会冷却更久，
+// 而同一个 key 的其他模型只受 key 级冷却约束，可以更早恢复使用。
+func (s *Scheduler) MarkModelCooling(ctx context.Context, key, model string, duration time.Duration) error {
+	if s == nil || strings.TrimSpace(key) == "" || strings.TrimSpace(model) == "" {
+		return nil
+	}
+	field := key + "|" + model
+	coolUntil := time.Now().Add(duration).Unix()
+	if s.client == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.modelCooling[field] = coolUntil
+		return nil
+	}
+	return s.client.HSet(ctx, "model_cooling", field, coolUntil).Err()
+}
+
 func (s *Scheduler) MarkDead(ctx context.Context, key string) error {
 	if s == nil {
 		return nil
@@ -342,9 +402,10 @@ func (s *Scheduler) Reset(ctx context.Context) error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.active = nil
-		s.cooling = make(map[string]int64)
 		s.dead = make(map[string]struct{})
 		s.concurrency = make(map[string]int)
+		// 保留 cooling / modelCooling：冷却状态跨 Reset 存活。
+		// 否则 Prober 恢复 key 后 Reset 会把冷却清掉，同一模型立刻又撞限流。
 		return nil
 	}
 	keys, err := s.client.ZRange(ctx, "nvidia:keys:active", 0, -1).Result()
@@ -354,8 +415,9 @@ func (s *Scheduler) Reset(ctx context.Context) error {
 		}
 		return err
 	}
-	redisKeys := make([]string, 0, len(keys)+4)
-	redisKeys = append(redisKeys, "nvidia:keys:active", "nvidia:keys:dead", "key_cooling", "key_current_weight")
+	redisKeys := make([]string, 0, len(keys)+2)
+	// 注意：key_cooling / model_cooling 故意不在删除列表里，冷却状态跨 Reset 存活。
+	redisKeys = append(redisKeys, "nvidia:keys:active", "nvidia:keys:dead", "key_current_weight")
 	for _, key := range keys {
 		redisKeys = append(redisKeys, "concurrency:"+key)
 	}
@@ -439,6 +501,11 @@ func (s *Scheduler) CleanupExpired(ctx context.Context) error {
 				delete(s.cooling, key)
 			}
 		}
+		for field, until := range s.modelCooling {
+			if until < now {
+				delete(s.modelCooling, field)
+			}
+		}
 		return nil
 	}
 	coolingEntries, err := s.client.HGetAll(ctx, "key_cooling").Result()
@@ -459,10 +526,42 @@ func (s *Scheduler) CleanupExpired(ctx context.Context) error {
 			expired = append(expired, key)
 		}
 	}
-	if len(expired) == 0 {
+	if len(expired) > 0 {
+		if err := s.client.HDel(ctx, "key_cooling", expired...).Err(); err != nil {
+			if isRedisUnavailable(err) {
+				return nil
+			}
+			return err
+		}
+	}
+	// 同样清理过期的模型级冷却表。
+	modelCoolingEntries, err := s.client.HGetAll(ctx, "model_cooling").Result()
+	if err != nil {
+		if isRedisUnavailable(err) {
+			return nil
+		}
+		return err
+	}
+	expiredModel := make([]string, 0, len(modelCoolingEntries))
+	for field, until := range modelCoolingEntries {
+		unixTs, convErr := strconv.ParseInt(until, 10, 64)
+		if convErr != nil {
+			continue
+		}
+		if unixTs < now {
+			expiredModel = append(expiredModel, field)
+		}
+	}
+	if len(expiredModel) == 0 {
 		return nil
 	}
-	return s.client.HDel(ctx, "key_cooling", expired...).Err()
+	if err := s.client.HDel(ctx, "model_cooling", expiredModel...).Err(); err != nil {
+		if isRedisUnavailable(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func isRedisUnavailable(err error) bool {

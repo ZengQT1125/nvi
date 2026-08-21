@@ -32,7 +32,7 @@ func TestScheduler(t *testing.T) {
 	}
 
 	// Acquire key, should get key1 (highest weight)
-	acquired, err := sched.AcquireKey(ctx, 1)
+	acquired, err := sched.AcquireKey(ctx, 1, "")
 	if err != nil {
 		t.Fatalf("AcquireKey failed: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestScheduler(t *testing.T) {
 	}
 
 	// Acquire again with maxConcurrency 1, should get key2 since key1 is full
-	acquired2, err := sched.AcquireKey(ctx, 1)
+	acquired2, err := sched.AcquireKey(ctx, 1, "")
 	if err != nil {
 		t.Fatalf("AcquireKey failed: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestScheduler(t *testing.T) {
 
 	// Acquire again, should get key2 because key1 is cooling and key2 is full (but we increase maxConcurrency to 2)
 	sched.ReleaseKey(ctx, "key2") // Reset key2 concurrency to 0
-	acquired3, err := sched.AcquireKey(ctx, 2)
+	acquired3, err := sched.AcquireKey(ctx, 2, "")
 	if err != nil {
 		t.Fatalf("AcquireKey failed: %v", err)
 	}

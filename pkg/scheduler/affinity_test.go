@@ -12,14 +12,14 @@ func TestTryAcquireSpecificKeyLocalScheduler(t *testing.T) {
 	if err := sched.AddKey(ctx, "key1", 1); err != nil {
 		t.Fatalf("AddKey key1 failed: %v", err)
 	}
-	acquired, err := sched.TryAcquireSpecificKey(ctx, "key1", 1)
+	acquired, err := sched.TryAcquireSpecificKey(ctx, "key1", 1, "")
 	if err != nil {
 		t.Fatalf("TryAcquireSpecificKey failed: %v", err)
 	}
 	if !acquired {
 		t.Fatal("expected specific key to be acquired")
 	}
-	second, err := sched.TryAcquireSpecificKey(ctx, "key1", 1)
+	second, err := sched.TryAcquireSpecificKey(ctx, "key1", 1, "")
 	if err != nil {
 		t.Fatalf("second TryAcquireSpecificKey failed: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestTryAcquireSpecificKeyLocalScheduler(t *testing.T) {
 	if err := sched.MarkCooling(ctx, "key1", time.Minute); err != nil {
 		t.Fatalf("MarkCooling failed: %v", err)
 	}
-	coolingAcquire, err := sched.TryAcquireSpecificKey(ctx, "key1", 1)
+	coolingAcquire, err := sched.TryAcquireSpecificKey(ctx, "key1", 1, "")
 	if err != nil {
 		t.Fatalf("TryAcquireSpecificKey while cooling failed: %v", err)
 	}

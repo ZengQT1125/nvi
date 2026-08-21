@@ -125,7 +125,7 @@ func (g *Gateway) executeTranslatedCompatStream(
 			w.WriteHeader(499)
 			return
 		}
-		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, protocol+".stream", affinityID)
+		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, protocol+".stream", affinityID, requestedModel)
 		if key != "" {
 			diagnostics.noteSelectedKey(key)
 			g.refreshConversationKeyBinding(affinityID, key, false)
@@ -265,6 +265,7 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			}
 			recordUpstreamRuntimeEventFull(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 			g.markCooling(ctx, key, resp.Header.Get("Retry-After"))
+			g.markModelCooling(ctx, key, model, resp.Header.Get("Retry-After"))
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusCooling)
 			g.clearConversationKeyBinding(affinityID, key)
 			return nil, nil, nil, true, fmt.Errorf("upstream rate limited")

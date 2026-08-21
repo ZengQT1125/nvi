@@ -16,7 +16,7 @@ func TestLocalSchedulerUsesWeightedRoundRobin(t *testing.T) {
 		t.Fatalf("AddKey key2 failed: %v", err)
 	}
 
-	first, err := sched.AcquireKey(ctx, 1)
+	first, err := sched.AcquireKey(ctx, 1, "")
 	if err != nil {
 		t.Fatalf("AcquireKey first failed: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestLocalSchedulerUsesWeightedRoundRobin(t *testing.T) {
 		t.Fatalf("ReleaseKey first failed: %v", err)
 	}
 
-	second, err := sched.AcquireKey(ctx, 1)
+	second, err := sched.AcquireKey(ctx, 1, "")
 	if err != nil {
 		t.Fatalf("AcquireKey second failed: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestLocalSchedulerUsesWeightedRoundRobin(t *testing.T) {
 		t.Fatalf("ReleaseKey second failed: %v", err)
 	}
 
-	third, err := sched.AcquireKey(ctx, 1)
+	third, err := sched.AcquireKey(ctx, 1, "")
 	if err != nil {
 		t.Fatalf("AcquireKey third failed: %v", err)
 	}

@@ -216,7 +216,7 @@ func (g *Gateway) executeResponsesStream(ctx context.Context, w http.ResponseWri
 	diagnostics := newUpstreamAttemptDiagnostics("responses.stream")
 	lastErr := "upstream request failed"
 	for i := 0; i < crossKeyAttemptBudget(cfg.MaxRetries); i++ {
-		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "responses.stream", affinityID)
+		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, "responses.stream", affinityID, requestedModel)
 		if key != "" {
 			diagnostics.noteSelectedKey(key)
 			g.refreshConversationKeyBinding(affinityID, key, false)

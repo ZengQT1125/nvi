@@ -43,7 +43,7 @@ func (g *Gateway) executeOpenAIJSONPath(ctx context.Context, translatedBody []by
 	diagnostics := newUpstreamAttemptDiagnostics(endpointPath)
 	lastErr := "upstream request failed"
 	for i := 0; i < crossKeyAttemptBudget(cfg.MaxRetries); i++ {
-		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, endpointPath, affinityID)
+		key, reusedPreferredKey, err := g.acquirePreferredKeyWithQueue(ctx, nil, nil, cfg.MaxConcurrency, false, endpointPath, affinityID, extractModelFromBody(translatedBody))
 		if key != "" {
 			diagnostics.noteSelectedKey(key)
 		}
