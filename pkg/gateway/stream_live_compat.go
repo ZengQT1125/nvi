@@ -221,6 +221,7 @@ func (g *Gateway) executeTranslatedCompatStream(
 
 func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfig, key string, body []byte, operation, affinityID string) (*http.Response, io.Reader, context.CancelFunc, bool, error) {
 	cfg = models.NormalizeSystemConfig(cfg)
+	model := extractModelFromBody(body)
 	attemptBudget := sameKeyTransportRetryBudget(cfg) + 1
 	var lastErr error
 	for attempt := 0; attempt < attemptBudget; attempt++ {
@@ -237,7 +238,7 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 					stage = "first_chunk_timeout"
 					message = "流式首个 chunk 超时，正在重试当前 NVIDIA 官方 Key"
 				}
-				recordUpstreamRuntimeEvent(operation, stage, key, false, 0, message)
+				recordUpstreamRuntimeEventFull(operation, stage, key, false, 0, message, "", model)
 				if attempt+1 < attemptBudget {
 					if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 						break
@@ -247,7 +248,7 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 				g.clearConversationKeyBinding(affinityID, key)
 				return nil, nil, nil, true, err
 			}
-			recordUpstreamRuntimeEvent(operation, "upstream_error", key, false, 0, err.Error())
+			recordUpstreamRuntimeEventFull(operation, "upstream_error", key, false, 0, err.Error(), "", model)
 			return nil, nil, nil, false, err
 		}
 		contentType := resp.Header.Get("Content-Type")
@@ -262,7 +263,7 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			if cancel != nil {
 				cancel()
 			}
-			recordUpstreamRuntimeEventWithRaw(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes))
+			recordUpstreamRuntimeEventFull(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 			g.markCooling(ctx, key, resp.Header.Get("Retry-After"))
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusCooling)
 			g.clearConversationKeyBinding(affinityID, key)
@@ -273,7 +274,7 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			if cancel != nil {
 				cancel()
 			}
-			recordUpstreamRuntimeEventWithRaw(operation, "auth_rejected", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 鉴权失败，已标记为不可用", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes))
+			recordUpstreamRuntimeEventFull(operation, "auth_rejected", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 鉴权失败，已标记为不可用", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 			_ = g.scheduler.MarkDead(ctx, key)
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusDead)
 			g.clearConversationKeyBinding(affinityID, key)
@@ -286,7 +287,7 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			}
 			parsedErr := parseUpstreamError(bodyBytes, "upstream stream request failed")
 			lastErr = errors.New(parsedErr)
-			recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes))
+			recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 			if attempt+1 < attemptBudget {
 				if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 					break
@@ -303,10 +304,10 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 					cancel()
 				}
 				parsedErr := parseUpstreamError(bodyBytes, "upstream stream request failed")
-				recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes))
+				recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 				return nil, nil, nil, false, errors.New(parsedErr)
 			}
-			recordUpstreamRuntimeEventWithRaw(operation, "upstream_ok", key, true, resp.StatusCode, "已成功建立到 NVIDIA 官方接口的流式连接", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), nil))
+			recordUpstreamRuntimeEventFull(operation, "upstream_ok", key, true, resp.StatusCode, "已成功建立到 NVIDIA 官方接口的流式连接", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), nil), model)
 			return resp, reader, cancel, false, nil
 		}
 	}

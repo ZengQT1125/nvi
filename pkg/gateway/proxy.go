@@ -27,6 +27,16 @@ var bufferPool = sync.Pool{
 	},
 }
 
+func extractModelFromBody(body []byte) string {
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Model)
+}
+
 type Gateway struct {
 	scheduler    *scheduler.Scheduler
 	cache        *cache.SemanticCache
@@ -721,6 +731,7 @@ func (g *Gateway) fetchUpstreamModels(ctx context.Context) proxyResult {
 
 func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.SystemConfig, key, method, endpointPath string, body []byte, accept, operation, affinityID string) (proxyResult, bool) {
 	cfg = models.NormalizeSystemConfig(cfg)
+	model := extractModelFromBody(body)
 	var lastNetworkErr string
 	attemptBudget := sameKeyTransportRetryBudget(cfg) + 1
 	for attempt := 0; attempt < attemptBudget; attempt++ {
@@ -738,7 +749,7 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 					stage = "first_byte_timeout"
 					message = "上游首包超时，正在重试当前 NVIDIA 官方 Key"
 				}
-				recordUpstreamRuntimeEvent(operation, stage, key, false, 0, message)
+				recordUpstreamRuntimeEventFull(operation, stage, key, false, 0, message, "", model)
 				if attempt+1 < attemptBudget {
 					if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 						break
@@ -748,7 +759,7 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 				g.clearConversationKeyBinding(affinityID, key)
 				return proxyResult{}, true
 			}
-			recordUpstreamRuntimeEvent(operation, "upstream_error", key, false, 0, err.Error())
+			recordUpstreamRuntimeEventFull(operation, "upstream_error", key, false, 0, err.Error(), "", model)
 			return proxyResult{StatusCode: http.StatusBadGateway, ContentType: "application/json", Body: mustJSON(openAIError("upstream_request_error", err.Error(), "api_error"))}, false
 		}
 		respBody, _ := io.ReadAll(resp.Body)
@@ -762,7 +773,7 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 		}
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusBadRequest && strings.Trim(strings.TrimSpace(endpointPath), "/") == "chat/completions" && isOpenAIChatCompletionEmpty(respBody) {
 			lastNetworkErr = errUpstreamEmptyResponse.Error()
-			recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, "upstream returned empty response; retrying", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody))
+			recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, "upstream returned empty response; retrying", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			if attempt+1 < attemptBudget {
 				if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 					break
@@ -775,13 +786,13 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 		policy := classifyUpstreamStatusCode(resp.StatusCode)
 		switch policy {
 		case upstreamFailurePolicyKeyRateLimited:
-			recordUpstreamRuntimeEventWithRaw(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody))
+			recordUpstreamRuntimeEventFull(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			g.markCooling(ctx, key, resp.Header.Get("Retry-After"))
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusCooling)
 			g.clearConversationKeyBinding(affinityID, key)
 			return proxyResult{}, true
 		case upstreamFailurePolicyKeyAuthRejected:
-			recordUpstreamRuntimeEventWithRaw(operation, "auth_rejected", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 鉴权失败，已标记为不可用", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody))
+			recordUpstreamRuntimeEventFull(operation, "auth_rejected", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 鉴权失败，已标记为不可用", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			_ = g.scheduler.MarkDead(ctx, key)
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusDead)
 			g.clearConversationKeyBinding(affinityID, key)
@@ -789,7 +800,7 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 		case upstreamFailurePolicyNetworkTransient:
 			parsedErr := parseUpstreamError(respBody, "upstream request failed")
 			lastNetworkErr = parsedErr
-			recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody))
+			recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			if attempt+1 < attemptBudget {
 				if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
 					break
@@ -800,10 +811,10 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 			return proxyResult{}, true
 		default:
 			if resp.StatusCode >= http.StatusBadRequest {
-				recordUpstreamRuntimeEventWithRaw(operation, "upstream_failed", key, false, resp.StatusCode, parseUpstreamError(respBody, "upstream request failed"), buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody))
+				recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, parseUpstreamError(respBody, "upstream request failed"), buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 				return proxyResult{StatusCode: resp.StatusCode, ContentType: contentType, Body: respBody}, false
 			}
-			recordUpstreamRuntimeEventWithRaw(operation, "upstream_ok", key, true, resp.StatusCode, "上游响应成功", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), nil))
+			recordUpstreamRuntimeEventFull(operation, "upstream_ok", key, true, resp.StatusCode, "上游响应成功", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), nil), model)
 			return proxyResult{StatusCode: resp.StatusCode, ContentType: contentType, Body: respBody}, false
 		}
 	}

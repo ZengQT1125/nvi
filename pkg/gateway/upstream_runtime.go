@@ -27,6 +27,7 @@ type upstreamRuntimeEvent struct {
 	At              time.Time `json:"at"`
 	Operation       string    `json:"operation"`
 	OperationLabel  string    `json:"operationLabel,omitempty"`
+	Model           string    `json:"model,omitempty"`
 	Stage           string    `json:"stage"`
 	StageLabel      string    `json:"stageLabel,omitempty"`
 	SourceType      string    `json:"sourceType,omitempty"`
@@ -63,6 +64,10 @@ func recordUpstreamRuntimeEvent(operation, stage, plaintextKey string, success b
 }
 
 func recordUpstreamRuntimeEventWithRaw(operation, stage, plaintextKey string, success bool, httpStatus int, detail, rawDetail string) {
+	recordUpstreamRuntimeEventFull(operation, stage, plaintextKey, success, httpStatus, detail, rawDetail, "")
+}
+
+func recordUpstreamRuntimeEventFull(operation, stage, plaintextKey string, success bool, httpStatus int, detail, rawDetail, model string) {
 	if strings.TrimSpace(operation) == "" {
 		operation = "unknown"
 	}
@@ -76,6 +81,7 @@ func recordUpstreamRuntimeEventWithRaw(operation, stage, plaintextKey string, su
 		At:              time.Now(),
 		Operation:       strings.TrimSpace(operation),
 		OperationLabel:  upstreamOperationLabel(operation),
+		Model:           strings.TrimSpace(model),
 		Stage:           strings.TrimSpace(stage),
 		StageLabel:      upstreamStageLabel(stage),
 		SourceType:      sourceType,

@@ -101,6 +101,7 @@ type UpstreamRuntimeSnapshot = {
     at: string;
     operation: string;
     operationLabel?: string;
+    model?: string;
     stage: string;
     stageLabel?: string;
     sourceType?: string;
@@ -115,6 +116,7 @@ type UpstreamRuntimeSnapshot = {
     at: string;
     operation: string;
     operationLabel?: string;
+    model?: string;
     stage: string;
     stageLabel?: string;
     sourceType?: string;
@@ -296,11 +298,12 @@ export default function HealthPage() {
 
             {runtimeData.recentEvents.length > 0 ? (
               <div className="max-h-[28rem] overflow-y-auto rounded-2xl border border-slate-200 bg-white">
-                <table className="min-w-full text-sm">
+                <table className="min-w-full text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-slate-400">
                       <th className="px-3 py-3">时间</th>
                       <th className="px-3 py-3">操作</th>
+                      <th className="px-3 py-3">模型</th>
                       <th className="px-3 py-3">阶段</th>
                       <th className="px-3 py-3">来源</th>
                       <th className="px-3 py-3">上游 Key</th>
@@ -311,19 +314,20 @@ export default function HealthPage() {
                   <tbody>
                     {[...runtimeData.recentEvents].reverse().map((event, index) => (
                       <tr key={`${event.at}-${event.operation}-${index}`} className="border-b border-slate-100 align-top text-slate-700">
-                        <td className="px-3 py-3 whitespace-nowrap">{new Date(event.at).toLocaleTimeString()}</td>
-                        <td className="px-3 py-3">
-                          <div className="font-medium text-slate-900">{event.operationLabel || event.operation}</div>
-                          <div className="font-mono text-[11px] text-slate-500">{event.operation}</div>
+                        <td className="px-2 py-2.5 whitespace-nowrap">{new Date(event.at).toLocaleTimeString()}</td>
+                        <td className="px-2 py-2.5">
+                          <div className="text-xs font-medium text-slate-900">{event.operationLabel || event.operation}</div>
+                          <div className="font-mono text-[10px] text-slate-500">{event.operation}</div>
                         </td>
-                        <td className="px-3 py-3">
-                          <div className="font-medium text-slate-900">{event.stageLabel || event.stage}</div>
+                        <td className="px-2 py-2.5 font-mono text-xs break-all">{event.model || "-"}</td>
+                        <td className="px-2 py-2.5">
+                          <div className="text-xs font-medium text-slate-900">{event.stageLabel || event.stage}</div>
                           <div className="font-mono text-[11px] text-slate-500">{event.stage}</div>
                         </td>
-                        <td className="px-3 py-3">{event.sourceLabel || "网关内部阶段"}</td>
-                        <td className="px-3 py-3">{event.upstreamKeyName || "-"}</td>
-                        <td className="px-3 py-3">{event.success ? "成功" : "失败"}{event.httpStatus ? ` · ${event.httpStatus}` : ""}</td>
-                        <td className="px-3 py-3 max-w-xl whitespace-pre-wrap break-all">{event.rawDetail || event.detail || "-"}</td>
+                        <td className="px-2 py-2.5">{event.sourceLabel || "网关内部阶段"}</td>
+                        <td className="px-2 py-2.5">{event.upstreamKeyName || "-"}</td>
+                        <td className="px-2 py-2.5">{event.success ? "成功" : "失败"}{event.httpStatus ? ` · ${event.httpStatus}` : ""}</td>
+                        <td className="px-2 py-2.5 max-w-xl whitespace-pre-wrap break-all">{event.rawDetail || event.detail || "-"}</td>
                       </tr>
                     ))}
                   </tbody>
