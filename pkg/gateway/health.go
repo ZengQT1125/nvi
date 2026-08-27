@@ -384,6 +384,21 @@ func buildSystemHealthReport(ctx context.Context, sched *scheduler.Scheduler, ru
 	// 119 个模型 × 单并发 × 45s ≈ 90 分钟，前端早已超时但后端仍在空转。
 	// 这里短路掉无意义的全量扫描，让用户拿到一个"上游不可达"的清晰报告。
 	if runReq.Scope != "" && len(catalog) > 0 && modelsCheck.Success {
+		// 单模型模式下，用户前端下拉可能还是旧缓存目录；如果所选模型不在最新
+		// 上游列表里（已下架/改名），buildModelRunTasks 会返回空任务导致"空跑成功"。
+		// 这里直接报错，让前端给出明确提示而不是返回 total=0 的假结果。
+		if runReq.Scope == "single" {
+			found := false
+			for _, item := range catalog {
+				if item.ID == runReq.ModelID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("模型 %q 不在最新上游模型列表中，请刷新模型列表后重新选择", runReq.ModelID)
+			}
+		}
 		runResult := executeModelHealthRun(ctx, cfg, probeSelection.Plaintext, catalog, runReq)
 		report.ActiveRun = cloneHealthModelRun(runResult)
 		if runReq.Scope == "all" {

@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 
 import { MetricCard, StatusBadge } from "@/components/dashboard/visuals";
@@ -83,6 +83,20 @@ type ModelRun = {
   }>;
 };
 
+// /api/upstream/models 的返回结构：后端每次都会实时拉取官方 /models，
+// 失败时降级返回内存里的旧目录（cached=true + warning）。
+type UpstreamModelsResponse = {
+  generatedAt: string;
+  probeKeyName: string;
+  models: Array<{
+    id: string;
+    supportsChatCandidate: boolean;
+    supportsEmbeddingsCandidate: boolean;
+  }>;
+  cached?: boolean;
+  warning?: string;
+};
+
 type UpstreamRuntimeSnapshot = {
   generatedAt: string;
   summary: {
@@ -132,6 +146,13 @@ type UpstreamRuntimeSnapshot = {
 export default function HealthPage() {
   const { data, error, mutate, isLoading } = useSWR<HealthReport>("/api/health/report", fetcher);
   const { data: runtimeData } = useSWR<UpstreamRuntimeSnapshot>("/api/upstream/runtime", fetcher, { refreshInterval: 5000 });
+  // 模型下拉直接走实时上游模型列表（与调试页同源），不再依赖 health report 里的缓存快照。
+  // 上游失败时后端会降级返回缓存目录并带上 warning，前端据此提示。
+  const {
+    data: upstreamModels,
+    error: upstreamModelsError,
+    isLoading: upstreamModelsLoading,
+  } = useSWR<UpstreamModelsResponse>("/api/upstream/models", fetcher, { refreshInterval: 60000 });
 
   const [running, setRunning] = useState(false);
   const [scope, setScope] = useState<"all" | "single">("all");
@@ -139,8 +160,19 @@ export default function HealthPage() {
   const [selectedModelId, setSelectedModelId] = useState("");
   const [runError, setRunError] = useState<string | null>(null);
 
-  const modelCatalog = Array.isArray(data?.modelCatalog) ? data.modelCatalog : [];
+  // 优先使用实时列表；实时接口挂了再回退 health report 里的缓存目录，保证下拉始终有选项。
+  const modelCatalog = Array.isArray(upstreamModels?.models) && upstreamModels.models.length > 0
+    ? upstreamModels.models
+    : (Array.isArray(data?.modelCatalog) ? data.modelCatalog : []);
   const effectiveSelectedModelId = selectedModelId || modelCatalog[0]?.id || "";
+
+  // 实时列表刷新后，如果之前选中的模型已不在列表里（上游下架/改名），自动重置到第一个，
+  // 避免 select 显示空值或把不存在的 modelId 提交给后端。
+  useEffect(() => {
+    if (scope === "single" && modelCatalog.length > 0 && selectedModelId && !modelCatalog.some((m) => m.id === selectedModelId)) {
+      setSelectedModelId(modelCatalog[0].id);
+    }
+  }, [modelCatalog, selectedModelId, scope]);
 
   const runHealthCheck = async () => {
     setRunning(true);
@@ -190,7 +222,7 @@ export default function HealthPage() {
             <div className="text-xs uppercase tracking-[0.24em] text-slate-400">健康检查</div>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-900 md:text-4xl">查看网关和所有模型是否正常</h1>
             <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-500">
-              当前页面默认只展示缓存结果，不会在打开时自动探测上游；只有点击“立即检查”后，才会真实访问 NVIDIA 官方 API。上游池实时状态区域只读取网关内存快照，不会额外请求官方。
+              当前页面默认只展示缓存结果，不会在打开时自动探测上游；只有模型下拉会实时拉取官方模型列表（失败时自动回退缓存目录）。点击“立即检查”后，才会真实访问 NVIDIA 官方 API。上游池实时状态区域只读取网关内存快照，不会额外请求官方。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -235,7 +267,15 @@ export default function HealthPage() {
           </div>
           {scope === "single" && modelCatalog.length === 0 ? (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              当前还没有缓存模型目录。请先执行一次“立即检查”，拿到最新模型列表后，再做单模型探测。
+              暂时无法获取模型列表{upstreamModelsLoading ? "（正在加载）" : ""}。
+              {upstreamModelsError || data?.modelCatalog?.length === 0
+                ? "请确认上游网络/代理正常，或先执行一次“立即检查”再试。"
+                : "请稍后重试。"}
+            </div>
+          ) : null}
+          {scope === "single" && upstreamModels?.cached ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              实时拉取上游模型列表失败，当前下拉展示的是缓存目录{upstreamModels.warning ? `（原因：${upstreamModels.warning}）` : ""}，可能不是最新列表。
             </div>
           ) : null}
           <div className="flex gap-3">
