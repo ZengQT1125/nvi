@@ -176,10 +176,10 @@ func (g *Gateway) executeTranslatedCompatStream(
 		translator := newLiveStreamTranslator(protocol, w, requestedModel, resp)
 		flusher, _ := w.(http.Flusher)
 		streamOpts := streamRelayOptions{
-			IdleTimeout:   time.Duration(cfg.StreamIdleTimeoutSec) * time.Second,
-			KeepAliveSec:  cfg.StreamKeepAliveSec,
-			Writer:        w,
-			Flusher:       flusher,
+			IdleTimeout:  time.Duration(cfg.StreamIdleTimeoutSec) * time.Second,
+			KeepAliveSec: cfg.StreamKeepAliveSec,
+			Writer:       w,
+			Flusher:      flusher,
 		}
 		streamErr := relayOpenAIStream(ctx, reader, translator, streamOpts)
 		_ = resp.Body.Close()
@@ -225,11 +225,13 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 	attemptBudget := sameKeyTransportRetryBudget(cfg) + 1
 	var lastErr error
 	for attempt := 0; attempt < attemptBudget; attempt++ {
+		attemptStart := time.Now()
 		resp, reader, cancel, err := g.openUpstreamStreamWithPrefetch(ctx, cfg, key, body)
 		if err != nil {
 			if cancel != nil {
 				cancel()
 			}
+			g.healthScorer.record(key, model, false, 0, time.Since(attemptStart).Milliseconds())
 			lastErr = err
 			if classifyUpstreamTransportError(err) == upstreamFailurePolicyNetworkTransient {
 				stage := "upstream_error"
@@ -263,6 +265,9 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			if cancel != nil {
 				cancel()
 			}
+			rtMs := time.Since(attemptStart).Milliseconds()
+			g.modelBreaker.recordFailure(model, false) // 429 计入模型级熔断统计
+			g.healthScorer.record(key, model, false, resp.StatusCode, rtMs)
 			recordUpstreamRuntimeEventFull(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 			g.markCooling(ctx, key, resp.Header.Get("Retry-After"))
 			g.markModelCooling(ctx, key, model, resp.Header.Get("Retry-After"))
@@ -275,8 +280,10 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			if cancel != nil {
 				cancel()
 			}
+			g.healthScorer.record(key, model, false, resp.StatusCode, time.Since(attemptStart).Milliseconds())
 			recordUpstreamRuntimeEventFull(operation, "auth_rejected", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 鉴权失败，已标记为不可用", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 			_ = g.scheduler.MarkDead(ctx, key)
+			g.healthScorer.reset(key)
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusDead)
 			g.clearConversationKeyBinding(affinityID, key)
 			return nil, nil, nil, true, fmt.Errorf("upstream auth rejected key")
@@ -285,6 +292,10 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 			_ = resp.Body.Close()
 			if cancel != nil {
 				cancel()
+			}
+			g.healthScorer.record(key, model, false, resp.StatusCode, time.Since(attemptStart).Milliseconds())
+			if resp.StatusCode >= 500 {
+				g.modelBreaker.recordFailure(model, true) // 5xx 计入模型级熔断统计
 			}
 			parsedErr := parseUpstreamError(bodyBytes, "upstream stream request failed")
 			lastErr = errors.New(parsedErr)
@@ -304,10 +315,12 @@ func (g *Gateway) openUpstreamStream(ctx context.Context, cfg models.SystemConfi
 				if cancel != nil {
 					cancel()
 				}
+				g.healthScorer.record(key, model, false, resp.StatusCode, time.Since(attemptStart).Milliseconds())
 				parsedErr := parseUpstreamError(bodyBytes, "upstream stream request failed")
 				recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), bodyBytes), model)
 				return nil, nil, nil, false, errors.New(parsedErr)
 			}
+			g.healthScorer.record(key, model, true, resp.StatusCode, time.Since(attemptStart).Milliseconds())
 			recordUpstreamRuntimeEventFull(operation, "upstream_ok", key, true, resp.StatusCode, "已成功建立到 NVIDIA 官方接口的流式连接", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), nil), model)
 			return resp, reader, cancel, false, nil
 		}

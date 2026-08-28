@@ -113,6 +113,8 @@ func serveBackend() {
 	semanticCache := cache.NewSemanticCache(redisClient)
 	usageTracker := middleware.NewUsageTracker(redisClient)
 	gw := gateway.NewGateway(sched, semanticCache, usageTracker)
+	// 启动密钥健康评分后台维护（低分 key 自动渐进冷却）
+	gw.StartHealthMaintenance(context.Background())
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	registerHealthRoute(app)

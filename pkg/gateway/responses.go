@@ -59,6 +59,12 @@ func (g *Gateway) HandleOpenAIResponses(c *fiber.Ctx) error {
 	masterKey, _ := c.Locals("masterKey").(*models.MasterKey)
 	affinityID := resolveConversationAffinityID(c.Get("X-Conversation-ID"), rawBody, masterKey)
 	estTokens := EstimateTokens(reqMeta.Prompt)
+
+	// 模型级熔断检查
+	if g.modelBreaker.isOpen(reqMeta.RequestedModel) {
+		return c.Status(fiber.StatusTooManyRequests).JSON(openAIError("model_circuit_open", "上游模型暂时过载，已熔断保护，请稍后重试", "rate_limit_error"))
+	}
+
 	if err := g.usageTracker.Check(context.Background(), masterKey, estTokens); err != nil {
 		status := fiber.StatusTooManyRequests
 		errorCode := "rate_limit_exceeded"

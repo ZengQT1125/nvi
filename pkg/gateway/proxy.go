@@ -42,6 +42,10 @@ type Gateway struct {
 	cache        *cache.SemanticCache
 	usageTracker *middleware.UsageTracker
 	client       *http.Client
+	// 模型级熔断器：某模型窗口内 429/5xx 过多时整体熔断，防止全池反复尝试的恶性循环
+	modelBreaker *modelCircuitBreaker
+	// 密钥健康评分器：被动统计识别慢/烂 key，低分自动渐进冷却
+	healthScorer *healthScorer
 }
 
 type proxyResult struct {
@@ -57,7 +61,17 @@ func NewGateway(sched *scheduler.Scheduler, semanticCache *cache.SemanticCache, 
 		cache:        semanticCache,
 		usageTracker: usageTracker,
 		client:       &http.Client{Timeout: 10 * time.Minute},
+		modelBreaker: newModelCircuitBreaker(),
+		healthScorer: newHealthScorer(sched),
 	}
+}
+
+// StartHealthMaintenance 启动密钥健康评分后台维护循环（每 30 秒评估一次）。
+func (g *Gateway) StartHealthMaintenance(ctx context.Context) {
+	if g == nil || g.healthScorer == nil {
+		return
+	}
+	go g.healthScorer.runMaintenance(ctx)
 }
 
 func (g *Gateway) acquirePreferredKeyWithQueue(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, maxConcurrency int, allowEarlyHeaders bool, operation, affinityID, model string) (string, bool, error) {
@@ -186,6 +200,12 @@ func (g *Gateway) HandleChatCompletions(c *fiber.Ctx) error {
 
 	masterKey, _ := c.Locals("masterKey").(*models.MasterKey)
 	affinityID := resolveConversationAffinityID(c.Get("X-Conversation-ID"), rawBody, masterKey)
+
+	// 模型级熔断检查：该模型窗口内 429/5xx 过多时直接快速失败，避免全池反复尝试
+	if g.modelBreaker.isOpen(translatedReq.Model) {
+		return c.Status(fiber.StatusTooManyRequests).JSON(openAIError("model_circuit_open", "上游模型暂时过载，已熔断保护，请稍后重试", "rate_limit_error"))
+	}
+
 	if err := g.usageTracker.Check(context.Background(), masterKey, estTokens); err != nil {
 		status := fiber.StatusTooManyRequests
 		errorCode := "rate_limit_exceeded"
@@ -301,6 +321,12 @@ func (g *Gateway) HandleClaudeMessages(c *fiber.Ctx) error {
 	}
 	masterKey, _ := c.Locals("masterKey").(*models.MasterKey)
 	affinityID := resolveConversationAffinityID(c.Get("X-Conversation-ID"), rawBody, masterKey)
+
+	// 模型级熔断检查
+	if g.modelBreaker.isOpen(requestedModel) {
+		return c.Status(fiber.StatusTooManyRequests).JSON(claudeErrorResponse("上游模型暂时过载，已熔断保护，请稍后重试"))
+	}
+
 	estTokens := EstimateTokens(promptStr)
 	if err := g.usageTracker.Check(context.Background(), masterKey, estTokens); err != nil {
 		status := fiber.StatusTooManyRequests
@@ -347,6 +373,12 @@ func (g *Gateway) HandleGeminiContent(c *fiber.Ctx) error {
 	}
 	masterKey, _ := c.Locals("masterKey").(*models.MasterKey)
 	affinityID := resolveConversationAffinityID(c.Get("X-Conversation-ID"), rawBody, masterKey)
+
+	// 模型级熔断检查
+	if g.modelBreaker.isOpen(requestedModel) {
+		return c.Status(fiber.StatusTooManyRequests).JSON(geminiErrorResponse("上游模型暂时过载，已熔断保护，请稍后重试"))
+	}
+
 	estTokens := EstimateTokens(promptStr)
 	if err := g.usageTracker.Check(context.Background(), masterKey, estTokens); err != nil {
 		status := fiber.StatusTooManyRequests
@@ -736,11 +768,13 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 	var lastNetworkErr string
 	attemptBudget := sameKeyTransportRetryBudget(cfg) + 1
 	for attempt := 0; attempt < attemptBudget; attempt++ {
+		attemptStart := time.Now()
 		resp, cancel, err := g.openUpstreamHeadersWithTimeout(ctx, cfg, key, method, endpointPath, body, accept)
 		if err != nil {
 			if cancel != nil {
 				cancel()
 			}
+			g.healthScorer.record(key, model, false, 0, time.Since(attemptStart).Milliseconds())
 			policy := classifyUpstreamTransportError(err)
 			if policy == upstreamFailurePolicyNetworkTransient {
 				lastNetworkErr = err.Error()
@@ -774,6 +808,7 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 		}
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusBadRequest && strings.Trim(strings.TrimSpace(endpointPath), "/") == "chat/completions" && isOpenAIChatCompletionEmpty(respBody) {
 			lastNetworkErr = errUpstreamEmptyResponse.Error()
+			g.healthScorer.record(key, model, false, resp.StatusCode, time.Since(attemptStart).Milliseconds())
 			recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, "upstream returned empty response; retrying", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			if attempt+1 < attemptBudget {
 				if !sleepWithContext(ctx, transportRetryBackoff(cfg)) {
@@ -787,6 +822,9 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 		policy := classifyUpstreamStatusCode(resp.StatusCode)
 		switch policy {
 		case upstreamFailurePolicyKeyRateLimited:
+			rtMs := time.Since(attemptStart).Milliseconds()
+			g.modelBreaker.recordFailure(model, false) // 429 计入模型级熔断统计
+			g.healthScorer.record(key, model, false, resp.StatusCode, rtMs)
 			recordUpstreamRuntimeEventFull(operation, "rate_limited", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 被限流，已进入冷却", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			g.markCooling(ctx, key, resp.Header.Get("Retry-After"))
 			g.markModelCooling(ctx, key, model, resp.Header.Get("Retry-After"))
@@ -794,12 +832,18 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 			g.clearConversationKeyBinding(affinityID, key)
 			return proxyResult{}, true
 		case upstreamFailurePolicyKeyAuthRejected:
+			g.healthScorer.record(key, model, false, resp.StatusCode, time.Since(attemptStart).Milliseconds())
 			recordUpstreamRuntimeEventFull(operation, "auth_rejected", key, false, resp.StatusCode, "上游 NVIDIA 官方 Key 鉴权失败，已标记为不可用", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 			_ = g.scheduler.MarkDead(ctx, key)
+			g.healthScorer.reset(key)
 			updateAPIKeyStatusByPlaintext(key, APIKeyStatusDead)
 			g.clearConversationKeyBinding(affinityID, key)
 			return proxyResult{}, true
 		case upstreamFailurePolicyNetworkTransient:
+			g.healthScorer.record(key, model, false, resp.StatusCode, time.Since(attemptStart).Milliseconds())
+			if resp.StatusCode >= 500 {
+				g.modelBreaker.recordFailure(model, true) // 5xx 计入模型级熔断统计
+			}
 			parsedErr := parseUpstreamError(respBody, "upstream request failed")
 			lastNetworkErr = parsedErr
 			recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, parsedErr, buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
@@ -813,9 +857,11 @@ func (g *Gateway) executeUpstreamJSONRequest(ctx context.Context, cfg models.Sys
 			return proxyResult{}, true
 		default:
 			if resp.StatusCode >= http.StatusBadRequest {
+				g.healthScorer.record(key, model, false, resp.StatusCode, time.Since(attemptStart).Milliseconds())
 				recordUpstreamRuntimeEventFull(operation, "upstream_failed", key, false, resp.StatusCode, parseUpstreamError(respBody, "upstream request failed"), buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), respBody), model)
 				return proxyResult{StatusCode: resp.StatusCode, ContentType: contentType, Body: respBody}, false
 			}
+			g.healthScorer.record(key, model, true, resp.StatusCode, time.Since(attemptStart).Milliseconds())
 			recordUpstreamRuntimeEventFull(operation, "upstream_ok", key, true, resp.StatusCode, "上游响应成功", buildUpstreamHTTPRawDetail(resp.StatusCode, contentType, resp.Header.Get("Retry-After"), nil), model)
 			return proxyResult{StatusCode: resp.StatusCode, ContentType: contentType, Body: respBody}, false
 		}
