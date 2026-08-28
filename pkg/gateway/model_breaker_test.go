@@ -5,19 +5,23 @@ import (
 	"time"
 )
 
+// testBreaker 构造一个小阈值的熔断器，便于测试快速触发。
+func testBreaker(threshold int) *modelCircuitBreaker {
+	return newModelCircuitBreakerWithConfig(threshold, 30*time.Second, 30*time.Second)
+}
+
 func TestModelBreaker429Trigger(t *testing.T) {
-	b := newModelCircuitBreaker()
+	b := testBreaker(3)
 	model := "nvidia/llama-3.3-70b"
 
-	// 7 次 429 不应触发熔断（阈值 8）
-	for i := 0; i < modelBreakerThreshold-1; i++ {
-		b.recordFailure(model, false)
-	}
+	// 2 次 429 不应触发熔断（阈值 3）
+	b.recordFailure(model, false)
+	b.recordFailure(model, false)
 	if b.isOpen(model) {
-		t.Fatalf("窗口内 %d 次 429 不应触发熔断", modelBreakerThreshold-1)
+		t.Fatal("窗口内未达阈值的 429 不应触发熔断")
 	}
 
-	// 第 8 次触发
+	// 第 3 次触发
 	b.recordFailure(model, false)
 	if !b.isOpen(model) {
 		t.Fatal("窗口内达到阈值后应触发熔断")
@@ -25,11 +29,11 @@ func TestModelBreaker429Trigger(t *testing.T) {
 }
 
 func TestModelBreaker429And5xxSeparate(t *testing.T) {
-	b := newModelCircuitBreaker()
+	b := testBreaker(3)
 	model := "nvidia/deepseek-r1"
 
 	// 大量 429 不影响 5xx 统计
-	for i := 0; i < modelBreakerThreshold; i++ {
+	for i := 0; i < 3; i++ {
 		b.recordFailure(model, false)
 	}
 	if !b.isOpen(model) {
@@ -51,7 +55,7 @@ func TestModelBreaker429And5xxSeparate(t *testing.T) {
 		t.Fatal("429 熔断清除后模型不应再处于熔断")
 	}
 
-	for i := 0; i < modelBreakerThreshold; i++ {
+	for i := 0; i < 3; i++ {
 		b.recordFailure(model, true)
 	}
 	if !b.isOpen(model) {
@@ -60,10 +64,10 @@ func TestModelBreaker429And5xxSeparate(t *testing.T) {
 }
 
 func TestModelBreakerCooldownExpiry(t *testing.T) {
-	b := newModelCircuitBreaker()
+	b := testBreaker(3)
 	model := "nvidia/llama-3.1-8b"
 
-	for i := 0; i < modelBreakerThreshold; i++ {
+	for i := 0; i < 3; i++ {
 		b.recordFailure(model, false)
 	}
 	if !b.isOpen(model) {
@@ -80,7 +84,7 @@ func TestModelBreakerCooldownExpiry(t *testing.T) {
 	}
 
 	// 恢复后窗口已清空，重新计数
-	for i := 0; i < modelBreakerThreshold-1; i++ {
+	for i := 0; i < 2; i++ {
 		b.recordFailure(model, false)
 	}
 	if b.isOpen(model) {
@@ -89,7 +93,7 @@ func TestModelBreakerCooldownExpiry(t *testing.T) {
 }
 
 func TestModelBreakerEmptyModel(t *testing.T) {
-	b := newModelCircuitBreaker()
+	b := testBreaker(3)
 	// 空模型不应 panic，也不应记录
 	b.recordFailure("", false)
 	b.recordFailure("  ", true)
@@ -99,9 +103,9 @@ func TestModelBreakerEmptyModel(t *testing.T) {
 }
 
 func TestModelBreakerStatus(t *testing.T) {
-	b := newModelCircuitBreaker()
+	b := testBreaker(3)
 	model := "nvidia/llama-3.3-70b"
-	for i := 0; i < modelBreakerThreshold; i++ {
+	for i := 0; i < 3; i++ {
 		b.recordFailure(model, false)
 	}
 	st := b.status(model)
@@ -110,5 +114,24 @@ func TestModelBreakerStatus(t *testing.T) {
 	}
 	if st["recent_429_count"].(int) != 0 {
 		t.Fatalf("熔断后窗口应清空: %v", st)
+	}
+	if st["enabled"] != true {
+		t.Fatalf("默认应启用熔断: %v", st)
+	}
+}
+
+func TestModelBreakerDisabled(t *testing.T) {
+	// threshold <= 0 表示禁用：无论多少失败都不熔断
+	b := newModelCircuitBreakerWithConfig(0, 30*time.Second, 30*time.Second)
+	model := "nvidia/llama-3.3-70b"
+	for i := 0; i < 100; i++ {
+		b.recordFailure(model, false)
+		b.recordFailure(model, true)
+	}
+	if b.isOpen(model) {
+		t.Fatal("禁用状态下不应熔断")
+	}
+	if st := b.status(model); st["enabled"] != false {
+		t.Fatalf("禁用状态应显示 enabled=false: %v", st)
 	}
 }
