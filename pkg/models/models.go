@@ -75,6 +75,8 @@ type SystemConfig struct {
 	// 无论开关如何，响应头里始终带上 X-Gateway-Upstream-Status / X-Gateway-Upstream-Final-Error，
 	// 这样即使开启了静默回退，日志/网关入口侧仍然能观测到。
 	SilentFallbackOnExhaustion bool `json:"silent_fallback_on_exhaustion"`
+	// BypassProxyModels 里的模型不走上游代理（UpstreamBaseURL），直接连官方地址。
+	BypassProxyModels []string `json:"bypass_proxy_models,omitempty"`
 }
 
 func DefaultSystemConfig() SystemConfig {
@@ -110,6 +112,7 @@ func NormalizeSystemConfig(cfg SystemConfig) SystemConfig {
 	if cfg.UpstreamBaseURL == "" {
 		cfg.UpstreamBaseURL = defaults.UpstreamBaseURL
 	}
+	cfg.BypassProxyModels = normalizeBypassModels(cfg.BypassProxyModels)
 	cfg.SchedulerStrategy = strings.TrimSpace(cfg.SchedulerStrategy)
 	if cfg.SchedulerStrategy == "" {
 		cfg.SchedulerStrategy = defaults.SchedulerStrategy
@@ -152,6 +155,30 @@ func NormalizeSystemConfig(cfg SystemConfig) SystemConfig {
 	}
 
 	return cfg
+}
+
+// normalizeBypassModels 去空白、去空项、去重，保留首次出现的顺序。
+func normalizeBypassModels(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		model := strings.TrimSpace(raw)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		result = append(result, model)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 

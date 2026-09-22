@@ -18,7 +18,7 @@ type apiKeyProbeResult struct {
 func probeKeyStatus(ctx context.Context, apiKey string) (*apiKeyProbeResult, bool) {
 	cfg := loadSystemConfig()
 	result := &apiKeyProbeResult{
-		Endpoint: buildUpstreamURL(cfg, "models"),
+		Endpoint: buildUpstreamURL(cfg, "models", ""),
 		Method:   http.MethodGet,
 		Detail:   "已调用 NVIDIA 官方 /models 接口验证该 Key 是否可用",
 	}

@@ -7,9 +7,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 
 interface SystemConfig {
   upstreamBaseURL: string;
+  bypassProxyModels: string[];
   schedulerStrategy: string;
   maxRetries: number;
   maxConcurrency: number;
@@ -29,6 +31,7 @@ interface SystemConfig {
 
 const defaultConfig: SystemConfig = {
   upstreamBaseURL: "https://integrate.api.nvidia.com/v1",
+  bypassProxyModels: [],
   schedulerStrategy: "weighted_round_robin",
   maxRetries: 5,
   maxConcurrency: 3,
@@ -46,8 +49,26 @@ const defaultConfig: SystemConfig = {
   anonymousAccess: false,
 };
 
+// 按换行 / 逗号 / 分号切分模型名，去空去重。
+function parseModelList(raw: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const piece of raw.split(/[\n,;]+/)) {
+    const model = piece.trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    result.push(model);
+  }
+  return result;
+}
+
+function joinModelList(models?: string[]): string {
+  return Array.isArray(models) ? models.join("\n") : "";
+}
+
 export default function SystemConfigPage() {
   const [config, setConfig] = useState<SystemConfig>(defaultConfig);
+  const [bypassText, setBypassText] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -63,6 +84,7 @@ export default function SystemConfigPage() {
           return;
         }
         setConfig({ ...defaultConfig, ...configData });
+        setBypassText(joinModelList(configData?.bypassProxyModels));
       } catch {
         setError("读取系统设置失败。");
       } finally {
@@ -78,7 +100,7 @@ export default function SystemConfigPage() {
 
 
   const saveConfig = async (nextConfig: SystemConfig, successMessage?: string) => {
-    const payload: Record<string, unknown> = { ...nextConfig };
+    const payload: Record<string, unknown> = { ...nextConfig, bypassProxyModels: parseModelList(bypassText) };
     const res = await fetch("/api/system/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -90,6 +112,7 @@ export default function SystemConfigPage() {
     }
     const normalized = { ...defaultConfig, ...(data?.config || nextConfig) };
     setConfig(normalized);
+    setBypassText(joinModelList(normalized.bypassProxyModels));
     setMessage(successMessage || data?.message || "系统设置已保存。");
   };
 
@@ -144,6 +167,11 @@ export default function SystemConfigPage() {
             <label className="space-y-2 block">
               <span className="text-sm text-slate-500">上游地址</span>
               <Input value={config.upstreamBaseURL} onChange={(e) => updateField("upstreamBaseURL", e.target.value)} placeholder="https://integrate.api.nvidia.com/v1" disabled={loading} />
+            </label>
+            <label className="space-y-2 block">
+              <span className="text-sm text-slate-500">放行模型（不走上面的上游地址）</span>
+              <Textarea value={bypassText} onChange={(e) => setBypassText(e.target.value)} placeholder={"每行一个模型名，例如：\ngoogle/diffusiongemma-26b-a4b-it"} disabled={loading} />
+              <span className="block text-xs text-slate-400">每行一个，也支持逗号分隔。命中的模型会忽略上面的上游地址，直接请求 https://integrate.api.nvidia.com/v1。</span>
             </label>
             <div className="grid gap-4 md:grid-cols-2">
               <label className="space-y-2 block">

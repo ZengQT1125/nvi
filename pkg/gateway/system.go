@@ -25,8 +25,14 @@ func resolveStoredSystemConfig(store *db.Store) models.SystemConfig {
 	return models.NormalizeSystemConfig(store.SystemConfig)
 }
 
-func buildUpstreamURL(cfg models.SystemConfig, endpointPath string) string {
+// buildUpstreamURL 拼接上游请求地址。
+// model 命中「放行模型」时忽略配置里的 UpstreamBaseURL（通常是中转代理），
+// 直接使用官方默认地址；其余模型仍走配置的地址。
+func buildUpstreamURL(cfg models.SystemConfig, endpointPath, model string) string {
 	base := strings.TrimSpace(cfg.UpstreamBaseURL)
+	if modelIsBypassed(cfg, model) {
+		base = models.DefaultUpstreamBaseURL
+	}
 	if base == "" {
 		base = models.DefaultUpstreamBaseURL
 	}
@@ -39,6 +45,20 @@ func buildUpstreamURL(cfg models.SystemConfig, endpointPath string) string {
 		u.Path = "/" + u.Path
 	}
 	return u.String()
+}
+
+// modelIsBypassed 判断模型是否在放行列表里（忽略大小写与首尾空白）。
+func modelIsBypassed(cfg models.SystemConfig, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	for _, candidate := range cfg.BypassProxyModels {
+		if strings.EqualFold(strings.TrimSpace(candidate), model) {
+			return true
+		}
+	}
+	return false
 }
 
 func protocolEnabled(cfg models.SystemConfig, protocol string) bool {

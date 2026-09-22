@@ -64,6 +64,8 @@ type systemConfigResponse struct {
 	EnableClaude            bool   `json:"enableClaude"`
 	EnableGemini            bool   `json:"enableGemini"`
 	AnonymousAccess         bool   `json:"anonymousAccess"`
+	// BypassProxyModels 命中的模型直连官方地址，不走 UpstreamBaseURL。
+	BypassProxyModels []string `json:"bypassProxyModels"`
 }
 
 type updateSystemConfigRequest struct {
@@ -82,6 +84,8 @@ type updateSystemConfigRequest struct {
 	EnableClaude            *bool   `json:"enableClaude"`
 	EnableGemini            *bool   `json:"enableGemini"`
 	AnonymousAccess         *bool   `json:"anonymousAccess"`
+	// BypassProxyModels 命中的模型直连官方地址，不走 UpstreamBaseURL。
+	BypassProxyModels *[]string `json:"bypassProxyModels"`
 }
 
 func AddAPIKey(sched *scheduler.Scheduler) fiber.Handler {
@@ -472,6 +476,9 @@ func UpdateSystemConfig(sched *scheduler.Scheduler) fiber.Handler {
 			if req.UpstreamBaseURL != nil {
 				cfg.UpstreamBaseURL = strings.TrimSpace(*req.UpstreamBaseURL)
 			}
+			if req.BypassProxyModels != nil {
+				cfg.BypassProxyModels = *req.BypassProxyModels
+			}
 			if req.SchedulerStrategy != nil {
 				cfg.SchedulerStrategy = strings.TrimSpace(*req.SchedulerStrategy)
 			}
@@ -520,11 +527,7 @@ func UpdateSystemConfig(sched *scheduler.Scheduler) fiber.Handler {
 			return nil
 		})
 		if err != nil {
-			status := 500
-			if err.Error() == "???????" {
-				status = 400
-			}
-			return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		}
 
 		if err := LoadActiveKeys(context.Background(), sched); err != nil {
@@ -557,6 +560,7 @@ func newSystemConfigResponse(cfg models.SystemConfig) systemConfigResponse {
 		EnableClaude:            cfg.EnableClaude,
 		EnableGemini:            cfg.EnableGemini,
 		AnonymousAccess:         cfg.AnonymousAccess,
+		BypassProxyModels:       cfg.BypassProxyModels,
 	}
 }
 
@@ -654,7 +658,7 @@ func newAPIKeyResponse(key models.APIKey) apiKeyResponse {
 
 // GatewayVersion 由构建流程注入，可在编译时通过 -ldflags 覆盖：
 //   go build -ldflags "-X nvidia-api-gateway/pkg/gateway.GatewayVersion=v1.2.3" ./main.go
-var GatewayVersion = "v4.0.1"
+var GatewayVersion = "v4.1.0"
 
 // AdminVersion 供管理后台显示后端版本号。
 // 该路由挂在 /admin 组内，已由 AdminAuthMiddleware 校验 X-Admin-Token。

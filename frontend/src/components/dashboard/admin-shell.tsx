@@ -89,7 +89,7 @@ export default function AdminShell({
 
           <div className="rounded-2xl border border-slate-200/70 bg-white/80 p-4 text-xs text-slate-500 shadow-sm">
             <div className="font-medium uppercase tracking-[0.22em] text-slate-400">版本</div>
-            <div className="mt-2 text-sm text-slate-800">{version || "v3.1.0"}</div>
+            <div className="mt-2 text-sm text-slate-800">{version || "v4.1.0"}</div>
             <div className="mt-2 leading-6">统一管理上游 key、网关 API Key、协议出口和健康检查。出站流量统一走系统默认出口。</div>
           </div>
         </aside>

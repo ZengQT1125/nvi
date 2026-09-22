@@ -654,7 +654,7 @@ func runSingleModelChatCheck(ctx context.Context, cfg models.SystemConfig, apiKe
 		ModelID:      modelID,
 		Protocol:     "chat",
 		Method:       http.MethodPost,
-		Endpoint:     buildUpstreamURL(cfg, "chat/completions"),
+		Endpoint:     buildUpstreamURL(cfg, "chat/completions", modelID),
 		AttemptCount: 1,
 		Meta:         map[string]any{"model": modelID, "probeMode": "stream_first_chunk"},
 	}
@@ -683,7 +683,7 @@ func runSingleModelEmbeddingsCheck(ctx context.Context, cfg models.SystemConfig,
 		ModelID:      modelID,
 		Protocol:     "embeddings",
 		Method:       http.MethodPost,
-		Endpoint:     buildUpstreamURL(cfg, "embeddings"),
+		Endpoint:     buildUpstreamURL(cfg, "embeddings", modelID),
 		AttemptCount: 1,
 		Meta:         map[string]any{"model": modelID},
 	}
@@ -770,7 +770,7 @@ func runUpstreamModelsCheck(ctx context.Context, cfg models.SystemConfig, apiKey
 		ID:       "nvidia_models",
 		Title:    "NVIDIA 官方 /models",
 		Method:   http.MethodGet,
-		Endpoint: buildUpstreamURL(cfg, "models"),
+		Endpoint: buildUpstreamURL(cfg, "models", ""),
 		Meta:     map[string]any{},
 	}
 	resp, err := doHealthRequest(ctx, cfg, apiKey, http.MethodGet, "models", nil)
@@ -816,7 +816,7 @@ func runUpstreamChatCheck(ctx context.Context, cfg models.SystemConfig, apiKey s
 		ID:       "nvidia_chat",
 		Title:    "NVIDIA 官方 /chat/completions",
 		Method:   http.MethodPost,
-		Endpoint: buildUpstreamURL(cfg, "chat/completions"),
+		Endpoint: buildUpstreamURL(cfg, "chat/completions", model),
 		Meta:     map[string]any{"model": model, "probeMode": "stream_first_chunk"},
 	}
 	if model == "" {
@@ -849,7 +849,7 @@ func runUpstreamEmbeddingsCheck(ctx context.Context, cfg models.SystemConfig, ap
 		ID:       "nvidia_embeddings",
 		Title:    "NVIDIA 官方 /embeddings",
 		Method:   http.MethodPost,
-		Endpoint: buildUpstreamURL(cfg, "embeddings"),
+		Endpoint: buildUpstreamURL(cfg, "embeddings", model),
 		Meta:     map[string]any{"model": model},
 	}
 	if model == "" {
@@ -915,7 +915,7 @@ func doHealthRequest(ctx context.Context, cfg models.SystemConfig, apiKey, metho
 	bodyReader := bytes.NewReader(body)
 	probeCtx, cancel := newHealthProbeContext(ctx, cfg)
 	defer cancel()
-	req, err := http.NewRequestWithContext(probeCtx, method, buildUpstreamURL(cfg, endpoint), bodyReader)
+	req, err := http.NewRequestWithContext(probeCtx, method, buildUpstreamURL(cfg, endpoint, extractModelFromBody(body)), bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -941,7 +941,7 @@ func doHealthChatFirstChunkRequest(ctx context.Context, cfg models.SystemConfig,
 	client := newHTTPClientForAPIKey(cfg, apiKey)
 	probeCtx, cancel := newHealthProbeContext(ctx, cfg)
 	defer cancel()
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, buildUpstreamURL(cfg, "chat/completions"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, buildUpstreamURL(cfg, "chat/completions", modelID), bytes.NewReader(body))
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -1094,15 +1094,6 @@ func buildHealthRecommendations(keys []healthKeySnapshot, checks []healthCheckRe
 		recommendations = append(recommendations, "当前健康检查全部通过，可以继续在调试页验证 Responses / Gemini / Claude 的业务链路。")
 	}
 	return recommendations
-}
-
-func truncateForHealth(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	if limit <= 0 || len([]rune(value)) <= limit {
-		return value
-	}
-	runes := []rune(value)
-	return string(runes[:limit]) + "…"
 }
 
 func (s *healthReportStore) put(report *healthReport) {

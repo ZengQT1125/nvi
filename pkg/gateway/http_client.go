@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"net/http"
 	"time"
 
@@ -31,14 +30,6 @@ func newHTTPClientForAPIKey(cfg models.SystemConfig, _ string) *http.Client {
 // newStreamHTTPClientForAPIKey 保留签名兼容，统一走系统默认出口。
 func newStreamHTTPClientForAPIKey(cfg models.SystemConfig, _ string) *http.Client {
 	return newStreamHTTPClient(cfg)
-}
-
-func newFirstByteContext(ctx context.Context, cfg models.SystemConfig) (context.Context, context.CancelFunc) {
-	timeout := time.Duration(cfg.FirstByteTimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = time.Duration(models.DefaultFirstByteTimeoutMs) * time.Millisecond
-	}
-	return context.WithTimeout(ctx, timeout)
 }
 
 func firstByteTimeout(cfg models.SystemConfig) time.Duration {

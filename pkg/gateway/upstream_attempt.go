@@ -57,7 +57,7 @@ func (g *Gateway) openUpstreamHeadersWithTimeout(
 	accept string,
 ) (*http.Response, context.CancelFunc, error) {
 	reqCtx, cancel := context.WithCancel(ctx)
-	req, err := http.NewRequestWithContext(reqCtx, method, buildUpstreamURL(cfg, endpointPath), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, method, buildUpstreamURL(cfg, endpointPath, extractModelFromBody(body)), bytes.NewReader(body))
 	if err != nil {
 		cancel()
 		return nil, nil, err
@@ -119,7 +119,7 @@ func (g *Gateway) openUpstreamStreamWithPrefetch(
 	}
 
 	reqCtx, cancel := context.WithCancel(ctx)
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, buildUpstreamURL(cfg, "chat/completions"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, buildUpstreamURL(cfg, "chat/completions", extractModelFromBody(body)), bytes.NewReader(body))
 	if err != nil {
 		cancel()
 		return nil, nil, nil, err

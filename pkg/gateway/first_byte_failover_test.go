@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"nvidia-api-gateway/pkg/db"
 )
 
 func TestNetworkRetryForNonStreamRequestsKeepsSameKey(t *testing.T) {
@@ -73,7 +75,8 @@ func TestNetworkRetryForStreamRequestsKeepsSameKey(t *testing.T) {
 				flusher.Flush()
 			}
 			if hit == 1 {
-				time.Sleep(150 * time.Millisecond)
+				// 静默时间必须长于测试设置的 1s request timeout，才能触发同 key 重试。
+				time.Sleep(1500 * time.Millisecond)
 			}
 			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"slow-recovered\"}}]}\n\n")
 			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
@@ -92,6 +95,10 @@ func TestNetworkRetryForStreamRequestsKeepsSameKey(t *testing.T) {
 		{Name: "slow", Plaintext: "slow-key", Weight: 1, Status: APIKeyStatusActive},
 		{Name: "fast", Plaintext: "fast-key", Weight: 1, Status: APIKeyStatusActive},
 	})
+	// 流式路径刻意用 RequestTimeoutSecond 作为「首个 chunk 等待上限」，
+	// 而不是 FirstByteTimeoutMs——大模型首 token 可能很慢，用首包超时会误杀。
+	// 这里压到 1 秒，让 slow-key 的首次静默触发同 key 重试。
+	setRequestTimeoutSecond(t, 1)
 	gw := NewGateway(sched, nil, nil)
 	writer := newCaptureWriter()
 	gw.executeOpenAIStream(context.Background(), writer, []byte(`{"model":"meta/llama-3.1-8b-instruct","messages":[{"role":"user","content":"hello"}],"stream":true}`), "meta/llama-3.1-8b-instruct", "hello", nil, 0, nil, "conversation:test-2")
@@ -193,3 +200,14 @@ func (w *captureWriter) Flush() {}
 
 var _ http.ResponseWriter = (*captureWriter)(nil)
 var _ http.Flusher = (*captureWriter)(nil)
+
+// setRequestTimeoutSecond 覆盖当前测试用例的请求总超时（秒）。
+func setRequestTimeoutSecond(t *testing.T, seconds int) {
+	t.Helper()
+	if err := db.UpdateStore(func(store *db.Store) error {
+		store.SystemConfig.RequestTimeoutSecond = seconds
+		return nil
+	}); err != nil {
+		t.Fatalf("set request timeout: %v", err)
+	}
+}

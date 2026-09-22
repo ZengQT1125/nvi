@@ -41,7 +41,6 @@ type Gateway struct {
 	scheduler    *scheduler.Scheduler
 	cache        *cache.SemanticCache
 	usageTracker *middleware.UsageTracker
-	client       *http.Client
 	// 模型级熔断器：某模型窗口内 429/5xx 过多时整体熔断，防止全池反复尝试的恶性循环
 	modelBreaker *modelCircuitBreaker
 	// 密钥健康评分器：被动统计识别慢/烂 key，低分自动渐进冷却
@@ -60,7 +59,6 @@ func NewGateway(sched *scheduler.Scheduler, semanticCache *cache.SemanticCache, 
 		scheduler:    sched,
 		cache:        semanticCache,
 		usageTracker: usageTracker,
-		client:       &http.Client{Timeout: 10 * time.Minute},
 		modelBreaker: newModelCircuitBreaker(),
 		healthScorer: newHealthScorer(sched),
 	}
@@ -881,31 +879,11 @@ func (g *Gateway) callUpstreamChat(ctx context.Context, cfg models.SystemConfig,
 }
 
 func (g *Gateway) httpClient(cfg models.SystemConfig, key string) *http.Client {
-	client := newHTTPClientForAPIKey(cfg, key)
-	if g == nil || g.client == nil {
-		return client
-	}
-	if g.client.Jar != nil {
-		client.Jar = g.client.Jar
-	}
-	if g.client.CheckRedirect != nil {
-		client.CheckRedirect = g.client.CheckRedirect
-	}
-	return client
+	return newHTTPClientForAPIKey(cfg, key)
 }
 
 func (g *Gateway) streamHTTPClient(cfg models.SystemConfig, key string) *http.Client {
-	client := newStreamHTTPClientForAPIKey(cfg, key)
-	if g == nil || g.client == nil {
-		return client
-	}
-	if g.client.Jar != nil {
-		client.Jar = g.client.Jar
-	}
-	if g.client.CheckRedirect != nil {
-		client.CheckRedirect = g.client.CheckRedirect
-	}
-	return client
+	return newStreamHTTPClientForAPIKey(cfg, key)
 }
 
 func (g *Gateway) markCooling(ctx context.Context, key, retryAfter string) {
@@ -962,37 +940,6 @@ func geminiErrorResponse(message string) fiber.Map {
 			"status":  "INVALID_ARGUMENT",
 		},
 	}
-}
-
-func buildChatCompletionSuccessRawDetail(operation string, respStatus int, contentType, retryAfter string, body []byte) string {
-	raw := buildUpstreamHTTPRawDetail(respStatus, contentType, retryAfter, nil)
-	if strings.TrimSpace(operation) != "chat/completions" {
-		return raw
-	}
-	var payload struct {
-		Choices []struct {
-			FinishReason string `json:"finish_reason,omitempty"`
-			Message      struct {
-				Role      string `json:"role,omitempty"`
-				Content   string `json:"content,omitempty"`
-				ToolCalls []any  `json:"tool_calls,omitempty"`
-			} `json:"message,omitempty"`
-		} `json:"choices,omitempty"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Choices) == 0 {
-		return raw
-	}
-	choice := payload.Choices[0]
-	parts := []string{raw}
-	if strings.TrimSpace(choice.FinishReason) != "" {
-		parts = append(parts, "finish_reason: "+strings.TrimSpace(choice.FinishReason))
-	}
-	if strings.TrimSpace(choice.Message.Role) != "" {
-		parts = append(parts, "message_role: "+strings.TrimSpace(choice.Message.Role))
-	}
-	parts = append(parts, fmt.Sprintf("content_chars: %d", len([]rune(choice.Message.Content))))
-	parts = append(parts, fmt.Sprintf("tool_calls: %d", len(choice.Message.ToolCalls)))
-	return strings.Join(parts, "\n")
 }
 
 func parseUpstreamError(raw []byte, fallback string) string {
