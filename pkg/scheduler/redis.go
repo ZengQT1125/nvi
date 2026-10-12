@@ -120,6 +120,25 @@ return 1
 		`)
 )
 
+const (
+	// key_base_weight / key_health_mult 把「用户配置的基础权重」与「健康评分推导的乘数」
+	// 分开存储：实际参与调度的权重 = 基础权重 × 健康乘数，写入 nvidia:keys:active 的 ZSET score。
+	//
+	// 为什么必须分开：
+	//   - 基础权重由 LoadActiveKeys 每 5 分钟（以及管理端增删改 key 时）重写；
+	//     健康乘数由 30 秒一次的健康评估循环刷新。
+	//   - 若两者都塞进 ZSET score，5 分钟一次的刷新会把健康乘数抹掉；
+	//   - 若直接在 ZSET score 上反复相乘，权重会随刷新次数复利放大/缩小。
+	keyBaseWeightHashKey = "key_base_weight"
+	keyHealthMultHashKey = "key_health_mult"
+
+	// 健康乘数上下限（口径与 AQUA Platform 的「健康分 → 权重乘数」一致）：
+	// 下限避免低分 key 被彻底饿死（硬闸门由冷却机制负责），
+	// 上限避免单个高分 key 吸走全部流量。
+	healthMultiplierMin = 0.5
+	healthMultiplierMax = 2.0
+)
+
 type Stats struct {
 	Active  int `json:"active"`
 	Cooling int `json:"cooling"`
@@ -128,7 +147,9 @@ type Stats struct {
 
 type localKey struct {
 	key           string
-	weight        float64
+	baseWeight    float64 // 用户配置的基础权重（由 AddKey 写入）
+	healthMult    float64 // 健康评分推导的乘数（由 SetHealthMultiplier 写入）
+	weight        float64 // baseWeight × healthMult，SWRR 实际使用的权重
 	currentWeight float64
 }
 
@@ -158,6 +179,9 @@ func (s *Scheduler) Client() *redis.Client {
 	return s.client
 }
 
+// AddKey 注册（或更新）一个上游 key 的**基础权重**。
+// 实际写入 nvidia:keys:active 的 score 是「基础权重 × 该 key 当前的健康乘数」，
+// 这样 30 秒一次的健康评估调整乘数时，不会破坏用户在管理后台配置的基础权重。
 func (s *Scheduler) AddKey(ctx context.Context, key string, weight float64) error {
 	if s == nil {
 		return nil
@@ -167,14 +191,111 @@ func (s *Scheduler) AddKey(ctx context.Context, key string, weight float64) erro
 		defer s.mu.Unlock()
 		for i := range s.active {
 			if s.active[i].key == key {
-				s.active[i].weight = weight
+				s.active[i].baseWeight = weight
+				s.active[i].weight = weight * s.active[i].healthMult
 				return nil
 			}
 		}
-		s.active = append(s.active, localKey{key: key, weight: weight})
+		s.active = append(s.active, localKey{
+			key:        key,
+			baseWeight: weight,
+			healthMult: 1.0,
+			weight:     weight,
+		})
 		return nil
 	}
-	return s.client.ZAdd(ctx, "nvidia:keys:active", redis.Z{Score: weight, Member: key}).Err()
+	multiplier, err := s.healthMultiplier(ctx, key)
+	if err != nil {
+		return err
+	}
+	// 先落基础权重，再写实际权重：SetHealthMultiplier 依赖前者才能重算 score。
+	if err := s.client.HSet(ctx, keyBaseWeightHashKey, key, formatWeight(weight)).Err(); err != nil {
+		return err
+	}
+	return s.client.ZAdd(ctx, "nvidia:keys:active", redis.Z{Score: weight * multiplier, Member: key}).Err()
+}
+
+// formatWeight 统一权重的存储格式，保证 HGet → ParseFloat 能无损往返。
+func formatWeight(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+// SetHealthMultiplier 由健康评分后台循环（每 30 秒）调用：写入某个 key 的健康乘数，
+// 并把「基础权重 × 乘数」重新写回 nvidia:keys:active 的 ZSET score。
+//
+// 该方法是幂等的：乘数只决定相对权重，重复写入同一个乘数不会产生累积/复利效应。
+// 对于不在活跃池中的 key（已删除、已移出）直接忽略，避免把孤立权重写回调度池。
+func (s *Scheduler) SetHealthMultiplier(ctx context.Context, key string, multiplier float64) error {
+	if s == nil {
+		return nil
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+	multiplier = clampHealthMultiplier(multiplier)
+
+	if s.client == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := range s.active {
+			if s.active[i].key == key {
+				s.active[i].healthMult = multiplier
+				s.active[i].weight = s.active[i].baseWeight * multiplier
+				return nil
+			}
+		}
+		// key 不在活跃池中：忽略（与 Redis 分支保持一致）
+		return nil
+	}
+
+	// 先确认该 key 仍在活跃池中，避免把已删除/已标记 Dead 的 key 重新写回 ZSET。
+	if _, err := s.client.ZScore(ctx, "nvidia:keys:active", key).Result(); err != nil {
+		if err == redis.Nil {
+			return nil
+		}
+		return err
+	}
+
+	baseWeight, err := s.client.HGet(ctx, keyBaseWeightHashKey, key).Float64()
+	if err == redis.Nil {
+		// 基础权重缺失说明该 key 尚未（或在 Reset 之后还未）经 AddKey 写入，不写入孤立权重。
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := s.client.HSet(ctx, keyHealthMultHashKey, key, formatWeight(multiplier)).Err(); err != nil {
+		return err
+	}
+	return s.client.ZAdd(ctx, "nvidia:keys:active", redis.Z{Score: baseWeight * multiplier, Member: key}).Err()
+}
+
+// healthMultiplier 读取某个 key 已经保存的健康乘数；未保存或值非法时返回 1.0（中性）。
+func (s *Scheduler) healthMultiplier(ctx context.Context, key string) (float64, error) {
+	raw, err := s.client.HGet(ctx, keyHealthMultHashKey, key).Result()
+	if err == redis.Nil {
+		return 1.0, nil
+	}
+	if err != nil {
+		return 1.0, err
+	}
+	value, parseErr := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if parseErr != nil || value <= 0 {
+		return 1.0, nil
+	}
+	return clampHealthMultiplier(value), nil
+}
+
+func clampHealthMultiplier(value float64) float64 {
+	if value < healthMultiplierMin {
+		return healthMultiplierMin
+	}
+	if value > healthMultiplierMax {
+		return healthMultiplierMax
+	}
+	return value
 }
 
 func (s *Scheduler) AcquireKey(ctx context.Context, maxConcurrency int, model string) (string, error) {
@@ -415,9 +536,12 @@ func (s *Scheduler) Reset(ctx context.Context) error {
 		}
 		return err
 	}
-	redisKeys := make([]string, 0, len(keys)+2)
+	redisKeys := make([]string, 0, len(keys)+5)
 	// 注意：key_cooling / model_cooling 故意不在删除列表里，冷却状态跨 Reset 存活。
-	redisKeys = append(redisKeys, "nvidia:keys:active", "nvidia:keys:dead", "key_current_weight")
+	// key_base_weight / key_health_mult 则一并清除：基础权重会在紧随其后的 AddKey 里重建，
+	// 健康乘数由 30 秒一次的后台评估循环在下一轮重新写入（最多 30 秒无乘数倾斜，可接受），
+	// 这样也避免已删除 key 在两个 Hash 里留下永久残留。
+	redisKeys = append(redisKeys, "nvidia:keys:active", "nvidia:keys:dead", "key_current_weight", keyBaseWeightHashKey, keyHealthMultHashKey)
 	for _, key := range keys {
 		redisKeys = append(redisKeys, "concurrency:"+key)
 	}

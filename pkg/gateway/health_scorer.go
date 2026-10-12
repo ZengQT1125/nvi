@@ -26,6 +26,10 @@ import (
 // 另外提供 5xx 阶梯退避：某个 key 对某模型连续 5xx 时，
 // 立即对该 (key, model) 做递增冷却（15s → 30s → 60s 封顶），
 // 不等后台周期，避免持续打到正在 5xx 的 key 上。
+//
+// 评分除了触发冷却，还会被换算成调度权重乘数（multiplier = 0.5 + score/100 × 1.5，范围 0.5~2.0）
+// 回写到调度器的 nvidia:keys:active ZSET：高分 key 分到更多流量，低分 key 被降权。
+// 乘数只影响相对权重、不改变可用性——真正的“停用”仍然由冷却负责。
 
 const (
 	healthSampleWindowSize = 100              // 每个 key 保留的滑动窗口样本数
@@ -126,20 +130,29 @@ func (h *healthScorer) runMaintenance(ctx context.Context) {
 	}
 }
 
-// evaluateScores 计算各 key 评分，低分 key 进入渐进冷却。
+// evaluateScores 计算各 key 评分：低分 key 进入渐进冷却，同时把所有已评分 key 的
+// 评分换算成权重乘数回写调度器（高分提权、低分降权）。
 func (h *healthScorer) evaluateScores(ctx context.Context) {
 	type coolingPlan struct {
 		key      string
 		duration time.Duration
 	}
-	var plans []coolingPlan
+	type weightPlan struct {
+		key        string
+		multiplier float64
+	}
+	var coolingPlans []coolingPlan
+	var weightPlans []weightPlan
 
 	h.mu.Lock()
 	for key, state := range h.keys {
 		if len(state.samples) < healthMinSamples {
+			// 样本不足时不参与评分：既不冷却也不调权，保持 AddKey 写入的中性乘数 1.0。
+			// 副作用是新 key 在积累到 healthMinSamples 个样本前权重天然偏低，相当于温和的冷启动放量。
 			continue
 		}
 		score := computeHealthScore(state.samples)
+		weightPlans = append(weightPlans, weightPlan{key: key, multiplier: healthMultiplierForScore(score)})
 		if score < healthLowScore {
 			state.consecutiveLow++
 			duration := healthBaseCooldown
@@ -150,7 +163,7 @@ func (h *healthScorer) evaluateScores(ctx context.Context) {
 					break
 				}
 			}
-			plans = append(plans, coolingPlan{key: key, duration: duration})
+			coolingPlans = append(coolingPlans, coolingPlan{key: key, duration: duration})
 			log.Printf("healthScorer 低分冷却: key=%s 评分=%.1f 连续低分=%d 冷却=%v",
 				shortKeyID(key), score, state.consecutiveLow, duration)
 		} else if score >= healthHealthyScore {
@@ -159,11 +172,30 @@ func (h *healthScorer) evaluateScores(ctx context.Context) {
 	}
 	h.mu.Unlock()
 
-	for _, p := range plans {
+	for _, p := range coolingPlans {
 		if h.scheduler != nil {
 			_ = h.scheduler.MarkCooling(ctx, p.key, p.duration)
 		}
 	}
+
+	// 把评分转成权重乘数回写调度器（写入 nvidia:keys:active 的 ZSET score）。
+	// 与上面的冷却互补：冷却是“硬闸门”，乘数是“软倾斜”——
+	// 低分但还没到冷却阈值的 key 会先被降权，而不是直接停用。
+	// 该循环每 30 秒跑一次，也是重复计算全量权重的天然时机（幂等，不累积）。
+	for _, p := range weightPlans {
+		if h.scheduler != nil {
+			_ = h.scheduler.SetHealthMultiplier(ctx, p.key, p.multiplier)
+		}
+	}
+}
+
+// healthMultiplierForScore 把 0~100 的健康分映射为权重乘数（0.5 ~ 2.0）。
+// 口径与 AQUA Platform 的「健康分 → 权重乘数」一致：multiplier = 0.5 + score/100 × 1.5。
+//
+// 注意：低于 healthLowScore(40) 的 key 会同时进入冷却，所以实际参与调度的 key
+// 其乘数大致落在 1.1 ~ 2.0 区间，体现的是“得分越高分到的流量越多”。
+func healthMultiplierForScore(score float64) float64 {
+	return 0.5 + score/100*1.5
 }
 
 // reset 清除某 key 的全部健康状态（密钥被删除/替换时调用）。

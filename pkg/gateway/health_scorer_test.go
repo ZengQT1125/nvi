@@ -226,4 +226,60 @@ func TestHealthScorerReset(t *testing.T) {
 	}
 }
 
+func TestHealthScorerAppliesWeightMultiplier(t *testing.T) {
+	sched := scheduler.NewScheduler(nil)
+	ctx := context.Background()
+	_ = sched.AddKey(ctx, "key-good", 1.0)
+	_ = sched.AddKey(ctx, "key-mid", 1.0)
+
+	h := newHealthScorer(sched)
+	// key-good：全成功且快 → 评分 100 → 乘数 2.0
+	for i := 0; i < 20; i++ {
+		h.record("key-good", "model-x", true, 200, 300)
+	}
+	// key-mid：全 5xx 且快 → 评分恰好 40（阈值是 <40，所以不冷却）→ 乘数 1.1
+	// 故意用另一个模型名记录：否则会触发 (key, model) 级 5xx 阶梯冷却，
+	// 导致选择阶段拿不到这个 key，测不出权重倾斜。
+	for i := 0; i < 20; i++ {
+		h.record("key-mid", "record-model", false, 503, 500)
+	}
+
+	h.evaluateScores(ctx)
+
+	// 调度权重应为 2.0 : 1.1 ≈ 1.82 : 1
+	counts := map[string]int{}
+	for i := 0; i < 1000; i++ {
+		key, err := sched.AcquireKey(ctx, 1000, "model-x")
+		if err != nil {
+			t.Fatalf("AcquireKey 出错: %v", err)
+		}
+		if key == "" {
+			t.Fatalf("第 %d 轮未选中任何 key", i)
+		}
+		counts[key]++
+		_ = sched.ReleaseKey(ctx, key)
+	}
+	if counts["key-good"] <= counts["key-mid"] {
+		t.Fatalf("高分 key 应分到更多流量，实际 good=%d mid=%d",
+			counts["key-good"], counts["key-mid"])
+	}
+	if counts["key-good"] < 550 {
+		t.Fatalf("高分 key 的流量占比应明显更高，实际 good=%d mid=%d",
+			counts["key-good"], counts["key-mid"])
+	}
+}
+
+func TestHealthMultiplierForScore(t *testing.T) {
+	// 与 AQUA Platform 口径一致：0.5 + score/100 × 1.5
+	if got := healthMultiplierForScore(100); got != 2.0 {
+		t.Fatalf("健康分 100 的乘数应为 2.0，实际 %v", got)
+	}
+	if got := healthMultiplierForScore(0); got != 0.5 {
+		t.Fatalf("健康分 0 的乘数应为 0.5，实际 %v", got)
+	}
+	if got := healthMultiplierForScore(40); got < 1.09 || got > 1.11 {
+		t.Fatalf("健康分 40（冷却阈值）的乘数应约为 1.1，实际 %v", got)
+	}
+}
+
 var _ = time.Second // 保持 time 导入（供未来测试扩展）
