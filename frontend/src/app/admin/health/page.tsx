@@ -165,6 +165,11 @@ export default function HealthPage() {
     ? upstreamModels.models
     : (Array.isArray(data?.modelCatalog) ? data.modelCatalog : []);
   const effectiveSelectedModelId = selectedModelId || modelCatalog[0]?.id || "";
+  // 后端会把失败原因写进 error.message（如「健康检查专用 Key 不可用」「已尝试 3 个上游 Key 均失败」），
+  // 直接展示出来，避免旧实现只给一句“请稍后重试”导致无法自查。
+  const upstreamErrorMessage = upstreamModelsError
+    ? (upstreamModelsError instanceof Error ? upstreamModelsError.message : String(upstreamModelsError))
+    : "";
 
   // 实时列表刷新后，如果之前选中的模型已不在列表里（上游下架/改名），自动重置到第一个，
   // 避免 select 显示空值或把不存在的 modelId 提交给后端。
@@ -267,10 +272,22 @@ export default function HealthPage() {
           </div>
           {scope === "single" && modelCatalog.length === 0 ? (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              暂时无法获取模型列表{upstreamModelsLoading ? "（正在加载）" : ""}。
-              {upstreamModelsError || data?.modelCatalog?.length === 0
-                ? "请确认上游网络/代理正常，或先执行一次“立即检查”再试。"
-                : "请稍后重试。"}
+              <div>暂时无法获取模型列表{upstreamModelsLoading ? "（正在加载）" : ""}。</div>
+              {upstreamErrorMessage ? (
+                <div className="mt-2 break-all rounded-lg bg-amber-100/70 px-3 py-2 font-mono text-xs leading-5 text-amber-900">
+                  原因：{upstreamErrorMessage}
+                </div>
+              ) : null}
+              {!upstreamErrorMessage && upstreamModels?.warning ? (
+                <div className="mt-2 break-all rounded-lg bg-amber-100/70 px-3 py-2 font-mono text-xs leading-5 text-amber-900">
+                  上游返回：{upstreamModels.warning}
+                </div>
+              ) : null}
+              <div className="mt-2 leading-6">
+                {upstreamErrorMessage
+                  ? "网关拉取模型目录时会依次尝试「健康专用 Key → 共享 Key 池」。若提示 Key 不可用，请到 Key 管理页把对应 Key 恢复为 Active，或取消其“健康专用”标记。"
+                  : "可先点一次“立即检查”重新探测上游；若仍失败，请确认 Key 池里还有 Active 状态的上游 Key。"}
+              </div>
             </div>
           ) : null}
           {scope === "single" && upstreamModels?.cached ? (

@@ -433,24 +433,37 @@ func hasDedicatedHealthProbeKey(keys []models.APIKey) bool {
 	return false
 }
 
-func selectHealthProbeKey(keys []models.APIKey) (healthProbeSelection, error) {
+// healthProbeCandidates 返回按优先级排列的探测候选 Key：
+//
+//	1. Active 且标记了“健康检查专用”(ProbeOnly) 的 Key —— 探测流量不占用业务额度；
+//	2. Active 的共享业务 Key —— 兜底。
+//
+// 为什么必须有第 2 层兜底：专用 Key 一旦失效（Dead / Disabled / 解密失败），
+// 旧实现会直接报错且不回退，导致健康检查页的模型列表永久不可用；
+// 而业务链路走的是共享 Key 池，一切正常——
+// 对外表现为“调试页能取到模型列表、健康页却取不到”。这是本次修复的核心。
+func healthProbeCandidates(keys []models.APIKey) ([]healthProbeSelection, error) {
 	secret := strings.TrimSpace(utils.GetEncryptionKey())
 	if secret == "" {
-		return healthProbeSelection{}, fmt.Errorf("missing ENCRYPTION_KEY")
+		return nil, fmt.Errorf("missing ENCRYPTION_KEY")
 	}
 	probeConfigured := hasDedicatedHealthProbeKey(keys)
-	decryptCandidates := func(candidates []models.APIKey, dedicated bool) (healthProbeSelection, error) {
+
+	decryptAll := func(candidates []models.APIKey, dedicated bool) []healthProbeSelection {
+		out := make([]healthProbeSelection, 0, len(candidates))
 		for _, key := range candidates {
 			plaintext, err := utils.Decrypt(key.Key, secret)
 			if err != nil {
 				continue
 			}
-			return healthProbeSelection{Name: key.Name, Plaintext: plaintext, Dedicated: dedicated, Configured: probeConfigured}, nil
+			out = append(out, healthProbeSelection{
+				Name:       healthKeyDisplayName(key),
+				Plaintext:  plaintext,
+				Dedicated:  dedicated,
+				Configured: probeConfigured,
+			})
 		}
-		if dedicated {
-			return healthProbeSelection{}, fmt.Errorf("健康检查专用 Key 无法解密或不可用")
-		}
-		return healthProbeSelection{}, fmt.Errorf("no active NVIDIA upstream key available")
+		return out
 	}
 
 	dedicatedActive := make([]models.APIKey, 0)
@@ -465,33 +478,113 @@ func selectHealthProbeKey(keys []models.APIKey) (healthProbeSelection, error) {
 		}
 		sharedActive = append(sharedActive, key)
 	}
-	if len(dedicatedActive) > 0 {
-		return decryptCandidates(dedicatedActive, true)
+	// 固定按 ID 排序，保证同一份配置下探测顺序可预期。
+	byID := func(items []models.APIKey) {
+		sort.SliceStable(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	}
-	if probeConfigured {
-		return healthProbeSelection{}, fmt.Errorf("已配置健康检查专用 Key，但当前没有 Active 状态的健康检查专用 Key")
+	byID(dedicatedActive)
+	byID(sharedActive)
+
+	candidates := make([]healthProbeSelection, 0, len(dedicatedActive)+len(sharedActive))
+	candidates = append(candidates, decryptAll(dedicatedActive, true)...)
+	candidates = append(candidates, decryptAll(sharedActive, false)...)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no active NVIDIA upstream key available（%s）", describeKeyPool(keys))
 	}
-	if len(sharedActive) > 0 {
-		return decryptCandidates(sharedActive, false)
-	}
-	return healthProbeSelection{}, fmt.Errorf("no active NVIDIA upstream key available")
+	return candidates, nil
 }
 
+// selectHealthProbeKey 返回优先级最高的一个探测 Key（供健康报告使用）。
+// 与 healthProbeCandidates 一致：专用 Key 不可用时自动回退到共享 Key 池。
+func selectHealthProbeKey(keys []models.APIKey) (healthProbeSelection, error) {
+	candidates, err := healthProbeCandidates(keys)
+	if err != nil {
+		return healthProbeSelection{}, err
+	}
+	return candidates[0], nil
+}
+
+func healthKeyDisplayName(key models.APIKey) string {
+	if name := strings.TrimSpace(key.Name); name != "" {
+		return name
+	}
+	return fmt.Sprintf("Key#%d", key.ID)
+}
+
+// describeKeyPool 生成“名称=状态”的池内摘要，让失败原因自解释、前端可直接展示。
+// 只输出名称与状态，不会泄露密钥明文。
+func describeKeyPool(keys []models.APIKey) string {
+	if len(keys) == 0 {
+		return "Key 池为空，请先在 Key 管理页录入至少一个上游 Key"
+	}
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		label := key.Status
+		if label == "" {
+			label = "Unknown"
+		}
+		if key.ProbeOnly {
+			label += "·健康专用"
+		}
+		parts = append(parts, healthKeyDisplayName(key)+"="+label)
+	}
+	return "当前 Key 状态：" + strings.Join(parts, "，")
+}
+
+// maxModelCatalogProbeAttempts 限制目录拉取最多尝试几个候选 Key。
+// 每个 Key 最坏会耗掉 HealthProbeTimeoutSec，Key 池很大时不设上限会把一次前端请求拖到几分钟。
+const maxModelCatalogProbeAttempts = 3
+
+// loadUpstreamModelCatalog 拉取上游模型目录。
+//
+// 按 healthProbeCandidates 的顺序依次尝试（专用 Key 优先，然后共享 Key）：
+// 单个 Key 被限流/鉴权失败/超时时会换下一个，而不是直接失败。
+// 旧实现只用一个 Key 且无任何重试，只要那个 Key 恰好不可用，
+// 健康检查页就拉不到模型列表（而调试页因为走带故障转移的业务链路依然正常）。
 func loadUpstreamModelCatalog(ctx context.Context) ([]healthModelCatalogItem, string, error) {
 	store, err := db.ReadStore()
 	if err != nil {
 		return nil, "", fmt.Errorf("load store: %w", err)
 	}
 	cfg := models.NormalizeSystemConfig(store.SystemConfig)
-	probeSelection, err := selectHealthProbeKey(store.APIKeys)
+	candidates, err := healthProbeCandidates(store.APIKeys)
 	if err != nil {
 		return nil, "", err
 	}
-	modelsCheck, availableModels := runUpstreamModelsCheck(ctx, cfg, probeSelection.Plaintext)
-	if !modelsCheck.Success {
-		return nil, probeSelection.Name, errors.New(modelsCheck.Detail)
+
+	lastKeyName := ""
+	var lastErr error
+	attempts := 0
+	for _, candidate := range candidates {
+		if attempts >= maxModelCatalogProbeAttempts {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		attempts++
+		lastKeyName = candidate.Name
+
+		modelsCheck, availableModels := runUpstreamModelsCheck(ctx, cfg, candidate.Plaintext)
+		if !modelsCheck.Success {
+			lastErr = errors.New(modelsCheck.Detail)
+			continue
+		}
+		catalog := buildModelCatalog(availableModels)
+		if len(catalog) == 0 {
+			lastErr = errors.New("上游 /models 返回成功但模型列表为空")
+			continue
+		}
+		return catalog, candidate.Name, nil
 	}
-	return buildModelCatalog(availableModels), probeSelection.Name, nil
+
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的探测 Key")
+	}
+	if attempts > 1 {
+		lastErr = fmt.Errorf("已尝试 %d 个上游 Key 均失败：%w", attempts, lastErr)
+	}
+	return nil, lastKeyName, lastErr
 }
 
 func buildModelCatalog(modelIDs []string) []healthModelCatalogItem {
@@ -1067,7 +1160,11 @@ func buildHealthRecommendations(keys []healthKeySnapshot, checks []healthCheckRe
 	if probeSelection == nil {
 		recommendations = append(recommendations, "当前还没有执行实时健康检查，因此页面只展示缓存结果。需要刷新探测数据时，请手动点击“立即检查”。")
 	} else if !probeSelection.Dedicated {
-		recommendations = append(recommendations, "当前健康检查仍在复用业务上游 key。建议新增一个健康检查专用 key，并在 Key 管理页开启“健康专用”，把探测流量和正常用户流量隔离开。")
+		if probeSelection.Configured {
+			recommendations = append(recommendations, "已配置“健康检查专用”Key，但当前没有 Active 的专用 Key，本次健康检查已自动回退为复用业务上游 Key（否则探测会直接失败）。请到 Key 管理页把专用 Key 恢复为 Active，或取消其“健康专用”标记。")
+		} else {
+			recommendations = append(recommendations, "当前健康检查仍在复用业务上游 key。建议新增一个健康检查专用 key，并在 Key 管理页开启“健康专用”，把探测流量和正常用户流量隔离开。")
+		}
 	}
 	for _, check := range checks {
 		if check.Success && check.DurationMs >= 15000 {
